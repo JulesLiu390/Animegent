@@ -158,22 +158,41 @@ def detect_faces_in_video(
     return all_results
 
 
+@dataclass
+class CropResult:
+    """裁剪结果，包含成功和被跳过的人脸信息。"""
+    cropped_paths: list[Path]
+    faces_kept: list[FaceBox]
+    skipped_small: int = 0
+    skipped_blurry: int = 0
+
+
+def _laplacian_variance(img_array: np.ndarray) -> float:
+    """计算图片的拉普拉斯方差（越低越模糊）。"""
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
 def crop_faces(
     image: str | Path,
     output_dir: str | Path,
     confidence: float = 0.5,
     padding: float = 0.3,
-) -> list[Path]:
-    """检测并裁剪出图片中的所有人脸。
+    min_size: int = 50,
+    blur_threshold: float = 30.0,
+) -> CropResult:
+    """检测并裁剪出图片中的所有人脸，自动跳过太小或模糊的人脸。
 
     Args:
         image: 图片路径。
         output_dir: 裁剪图片输出目录。
         confidence: 置信度阈值。
         padding: 边界框扩展比例（0.3 = 30%，人脸裁剪建议大一些）。
+        min_size: 人脸最小边长（像素），低于此值的跳过。
+        blur_threshold: 模糊度阈值（Laplacian 方差），低于此值的跳过。
 
     Returns:
-        裁剪后的图片路径列表。
+        CropResult，包含裁剪路径列表和跳过统计。
     """
     image = Path(image)
     output_dir = Path(output_dir)
@@ -181,13 +200,23 @@ def crop_faces(
 
     faces = detect_faces(image, confidence=confidence)
     if not faces:
-        return []
+        return CropResult(cropped_paths=[], faces_kept=[])
 
     img = Image.open(image)
     w, h = img.size
     cropped_paths: list[Path] = []
+    faces_kept: list[FaceBox] = []
+    skipped_small = 0
+    skipped_blurry = 0
+    face_index = 0
 
-    for i, face in enumerate(faces):
+    for face in faces:
+        # 过滤太小的人脸
+        if face.width < min_size or face.height < min_size:
+            skipped_small += 1
+            logger.info(f"跳过太小的人脸: {face.width:.0f}x{face.height:.0f} < {min_size}px")
+            continue
+
         pad_x = face.width * padding
         pad_y = face.height * padding
         x1 = max(0, int(face.x1 - pad_x))
@@ -198,12 +227,31 @@ def crop_faces(
         cropped = img.crop((x1, y1, x2, y2))
         if cropped.mode == "RGBA":
             cropped = cropped.convert("RGB")
-        out_path = output_dir / f"{image.stem}_face_{i}.jpg"
+
+        # 过滤模糊的人脸
+        cropped_array = np.array(cropped)
+        blur_score = _laplacian_variance(cropped_array)
+        if blur_score < blur_threshold:
+            skipped_blurry += 1
+            logger.info(f"跳过模糊的人脸: blur_score={blur_score:.1f} < {blur_threshold}")
+            continue
+
+        out_path = output_dir / f"{image.stem}_face_{face_index}.jpg"
         cropped.save(out_path, quality=95)
         cropped_paths.append(out_path)
+        faces_kept.append(face)
+        face_index += 1
 
-    logger.info(f"裁剪了 {len(cropped_paths)} 张人脸: {output_dir}")
-    return cropped_paths
+    logger.info(
+        f"裁剪了 {len(cropped_paths)} 张人脸 "
+        f"(跳过 {skipped_small} 个太小, {skipped_blurry} 个模糊): {output_dir}"
+    )
+    return CropResult(
+        cropped_paths=cropped_paths,
+        faces_kept=faces_kept,
+        skipped_small=skipped_small,
+        skipped_blurry=skipped_blurry,
+    )
 
 
 def compare_faces(embedding1: np.ndarray, embedding2: np.ndarray) -> float:

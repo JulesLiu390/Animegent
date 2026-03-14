@@ -83,14 +83,17 @@ def stylize_face(
         )
         contents.append(original_part)
 
-    text_prompt = prompt or DEFAULT_PROMPT
+    # 用户自定义 prompt 追加在默认要求之后，核心约束不可覆盖
+    base_prompt = DEFAULT_PROMPT
+    if prompt:
+        base_prompt += f"\n\nAdditional instructions: {prompt}"
     if original_image_path is not None:
-        text_prompt = (
+        base_prompt = (
             "Image 1: close-up face photo of the target person.\n"
             "Image 2: the original full scene photo — use it to reference this person's clothing, body type, and pose.\n\n"
-            + text_prompt
+            + base_prompt
         )
-    contents.append(text_prompt)
+    contents.append(base_prompt)
 
     last_error: Exception | None = None
     delay = retry_delay

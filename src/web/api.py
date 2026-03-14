@@ -58,10 +58,12 @@ def _project_path(name: str) -> Path:
 
 def _asset_dirs(project: str) -> dict[str, Path]:
     """返回项目的素材目录映射。"""
-    output = _project_path(project) / "output"
+    proj = _project_path(project)
+    output = proj / "output"
     return {
+        "originals": proj / "input",
         "characters": output / "stylized",
-        "faces": output / "faces" / "representatives",
+        "faces": output / "faces",
         "scenes": output / "scenes" / "stylized",
         "scenes_raw": output / "scenes" / "no_people",
         "panels": output / "panels",
@@ -93,7 +95,6 @@ def create_project(req: ProjectCreate) -> dict:
     proj_dir.mkdir(parents=True)
     for d in _asset_dirs(req.name).values():
         d.mkdir(parents=True, exist_ok=True)
-    (proj_dir / "tmp").mkdir(parents=True, exist_ok=True)
     return {"name": proj_dir.name, "created": True}
 
 
@@ -117,6 +118,8 @@ def list_assets(project: str) -> dict[str, list[dict]]:
         items = []
         if dir_path.exists():
             for f in sorted(dir_path.iterdir()):
+                if f.name == "assets.json":
+                    continue
                 if f.is_file():
                     rel = f.relative_to(PROJECT_ROOT)
                     item: dict[str, Any] = {
@@ -136,13 +139,35 @@ def list_assets(project: str) -> dict[str, list[dict]]:
     return result
 
 
+class AssetDelete(BaseModel):
+    path: str
+
+
+@app.delete("/api/assets")
+def delete_asset(req: AssetDelete) -> dict:
+    """删除单个素材文件。"""
+    p = Path(req.path)
+    # 安全检查：只允许删除 projects/ 下的文件
+    if not p.exists():
+        return {"deleted": False, "error": "文件不存在"}
+    try:
+        p.relative_to(PROJECTS_DIR)
+    except ValueError:
+        return {"deleted": False, "error": "不允许删除此文件"}
+    p.unlink()
+    return {"deleted": True}
+
+
 @app.post("/api/upload")
 async def upload_image(file: UploadFile, project: str) -> dict:
     """上传图片到项目目录。"""
-    upload_dir = _project_path(project) / "tmp"
+    upload_dir = _project_path(project) / "input"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = upload_dir / file.filename
+    # UUID 文件名，保留原始扩展名，避免同名覆盖
+    ext = Path(file.filename).suffix or ".png"
+    unique_name = f"{uuid.uuid4().hex[:8]}{ext}"
+    file_path = upload_dir / unique_name
     content = await file.read()
     file_path.write_bytes(content)
 
@@ -150,7 +175,7 @@ async def upload_image(file: UploadFile, project: str) -> dict:
     return {
         "path": str(file_path),
         "url": f"/files/{rel}",
-        "name": file.filename,
+        "name": unique_name,
     }
 
 

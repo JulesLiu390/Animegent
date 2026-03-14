@@ -19,6 +19,17 @@ export interface AttachedImage {
   previewUrl?: string;  // local blob URL for preview before upload
 }
 
+export interface CharacterOption {
+  path: string;
+  url: string;
+  filename: string;
+  category: "characters" | "faces";
+  name: string;
+  description: string;
+  selected: boolean;
+  label: string;
+}
+
 export interface ToolCallInfo {
   tool: string;
   args: Record<string, unknown>;
@@ -30,6 +41,8 @@ export interface ToolCallInfo {
 
 export interface ChatMessage {
   role: "user" | "assistant";
+  turnId: string;
+  type?: "image" | "text";  // user messages only
   content: string;
   images?: { path: string; url: string; tool: string }[];
   attachedImages?: AttachedImage[];
@@ -80,6 +93,15 @@ export async function uploadImage(file: File, project: string): Promise<{ path: 
   return res.json();
 }
 
+export async function deleteAsset(filePath: string): Promise<{ deleted: boolean }> {
+  const res = await fetch(`${API_BASE}/api/assets`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: filePath }),
+  });
+  return res.json();
+}
+
 // ========== 对话 (SSE 流式) ==========
 
 export interface StreamCallbacks {
@@ -97,6 +119,7 @@ export async function streamMessage(
   callbacks: StreamCallbacks,
   imagePaths?: string[],
   project?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
@@ -107,6 +130,7 @@ export async function streamMessage(
       image_paths: imagePaths,
       project,
     }),
+    signal,
   });
 
   if (!res.ok || !res.body) {

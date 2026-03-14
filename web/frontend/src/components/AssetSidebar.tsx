@@ -1,7 +1,8 @@
 import type { Assets } from "../api";
-import { getFileUrl } from "../api";
+import { getFileUrl, deleteAsset } from "../api";
 
 const CATEGORY_LABELS: Record<string, string> = {
+  originals: "原始图片",
   characters: "角色",
   faces: "人脸",
   scenes: "场景",
@@ -17,6 +18,16 @@ interface Props {
 }
 
 export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props) {
+  const handleDelete = async (name: string, path: string) => {
+    if (!confirm(`确定删除 "${name}" 吗？`)) return;
+    try {
+      await deleteAsset(path);
+      onRefresh?.();
+    } catch (err) {
+      console.error("Delete failed:", err);
+    }
+  };
+
   return (
     <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
       <div className="p-3 border-b border-gray-200 flex items-center justify-between">
@@ -44,9 +55,18 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                   item.type === "image" ? (
                     <div
                       key={item.name}
-                      className="cursor-pointer group"
+                      className="cursor-pointer group relative"
                       onClick={() => onAssetClick?.(item.path)}
                     >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(item.name, item.path);
+                        }}
+                        className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
+                      >
+                        ×
+                      </button>
                       <img
                         src={getFileUrl(item.url)}
                         alt={item.name}
@@ -59,10 +79,19 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                   ) : (
                     <div
                       key={item.name}
-                      className="col-span-2 px-2 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded cursor-pointer truncate"
+                      className="col-span-2 px-2 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded cursor-pointer truncate group relative"
                       onClick={() => onAssetClick?.(item.path)}
                     >
-                      📄 {item.name}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(item.name, item.path);
+                        }}
+                        className="absolute top-1 right-1 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
+                      >
+                        ×
+                      </button>
+                      {item.name}
                     </div>
                   )
                 )}

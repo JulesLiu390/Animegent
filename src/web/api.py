@@ -89,13 +89,53 @@ def _asset_dirs(project: str) -> dict[str, Path]:
         "scenes": output / "scenes" / "stylized",
         "scenes_raw": output / "scenes" / "no_people",
         "panels": output / "panels",
-        "videos": output / "videos",
+        "clips": output / "videos",
+        "final_videos": output / "videos",
         "storyboard_strips": output / "storyboards" / "strips",
         "storyboard_frames": output / "storyboards" / "frames",
         "storyboards": output / "storyboards",
         "clip_scripts": output / "storyboards" / "clip_scripts",
         "scripts": output / "scripts",
     }
+
+
+SHOWCASE_DIRS = ["stylized", "panels", "storyboards/strips", "storyboards/frames"]
+SHOWCASE_LIMIT = 12
+
+
+@app.get("/api/showcase")
+def get_showcase() -> list[dict]:
+    """从所有项目收集 showcase 素材（最近修改的图片）。"""
+    items: list[dict] = []
+    if not PROJECTS_DIR.exists():
+        return items
+    for proj_dir in PROJECTS_DIR.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        output = proj_dir / "output"
+        for sub in SHOWCASE_DIRS:
+            d = output / sub
+            if not d.exists():
+                continue
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in SUPPORTED_IMAGE_EXTS:
+                    rel = f.relative_to(PROJECT_ROOT)
+                    mtime = int(f.stat().st_mtime)
+                    items.append({
+                        "project": proj_dir.name,
+                        "name": f.name,
+                        "url": f"/files/{rel}?v={mtime}",
+                        "mtime": mtime,
+                        "category": sub.split("/")[-1],
+                    })
+    # Per-project: keep only the latest image
+    best: dict[str, dict] = {}
+    for item in items:
+        proj = item["project"]
+        if proj not in best or item["mtime"] > best[proj]["mtime"]:
+            best[proj] = item
+    result = sorted(best.values(), key=lambda x: x["mtime"], reverse=True)
+    return result[:SHOWCASE_LIMIT]
 
 
 class ProjectCreate(BaseModel):
@@ -185,6 +225,11 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                 if f.name == "assets.json":
                     continue
                 if f.is_file():
+                    # Split videos dir into clips vs final_videos
+                    if category == "clips" and f.name.startswith("final_"):
+                        continue
+                    if category == "final_videos" and not f.name.startswith("final_"):
+                        continue
                     rel = f.relative_to(PROJECT_ROOT)
                     mtime = int(f.stat().st_mtime)
                     item: dict[str, Any] = {
@@ -196,6 +241,15 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                         item["type"] = "image"
                     elif f.suffix.lower() in SUPPORTED_VIDEO_EXTS:
                         item["type"] = "video"
+                        # Try to find thumbnail: same dir (for final) or storyboard frames (for clips)
+                        thumb_name = f.stem + ".png"
+                        thumb_path = f.parent / thumb_name
+                        if not thumb_path.exists():
+                            thumb_path = _project_path(project) / "output" / "storyboards" / "frames" / thumb_name
+                        if thumb_path.exists():
+                            thumb_rel = thumb_path.relative_to(PROJECT_ROOT)
+                            thumb_mtime = int(thumb_path.stat().st_mtime)
+                            item["thumbnail"] = f"/files/{thumb_rel}?v={thumb_mtime}"
                     elif f.suffix.lower() == ".md":
                         item["type"] = "markdown"
                         item["content"] = f.read_text(encoding="utf-8")

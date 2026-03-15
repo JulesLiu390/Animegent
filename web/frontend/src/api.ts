@@ -8,6 +8,7 @@ export interface Asset {
   content?: string;
   description?: string;
   source_face?: string;
+  thumbnail?: string;
 }
 
 export interface Assets {
@@ -71,6 +72,19 @@ export interface Project {
 }
 
 // ========== 项目管理 ==========
+
+export interface ShowcaseItem {
+  project: string;
+  name: string;
+  url: string;
+  mtime: number;
+  category: string;
+}
+
+export async function fetchShowcase(): Promise<ShowcaseItem[]> {
+  const res = await fetch(`${API_BASE}/api/showcase`);
+  return res.json();
+}
 
 export async function fetchProjects(): Promise<Project[]> {
   const res = await fetch(`${API_BASE}/api/projects`);

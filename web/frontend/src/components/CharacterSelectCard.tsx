@@ -70,15 +70,15 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
 
   if (confirmed) {
     return (
-      <div className="bg-green-50 border border-green-200 rounded-xl p-3 my-2">
-        <div className="text-xs text-green-600 font-medium mb-2">
+      <div className="bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700 rounded-xl p-3 my-2">
+        <div className="text-xs text-green-600 dark:text-green-400 font-medium mb-2">
           {t("char.confirmed", { count: slots.length })}
         </div>
         <div className="flex flex-wrap gap-2">
           {slots.map((opt) => (
-            <div key={opt.path} className="flex items-center gap-1.5 bg-white rounded-lg px-2 py-1 border border-green-200">
+            <div key={opt.path} className="flex items-center gap-1.5 bg-white dark:bg-gray-800 rounded-lg px-2 py-1 border border-green-200 dark:border-green-700">
               <img src={getFileUrl(opt.url)} alt={opt.name} className="w-8 h-8 rounded object-cover" />
-              <div className="text-xs font-medium text-gray-700">{opt.label || opt.name}</div>
+              <div className="text-xs font-medium text-gray-700 dark:text-gray-200">{opt.label || opt.name}</div>
             </div>
           ))}
         </div>
@@ -98,13 +98,13 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     <button
       key={opt.path}
       onClick={() => handlePickerClick(opt)}
-      className="flex items-center gap-1.5 bg-gray-50 hover:bg-blue-50 rounded-lg px-2 py-1.5 border border-gray-200 hover:border-blue-300 transition-colors"
+      className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg px-2 py-1.5 border border-gray-200 dark:border-gray-700 hover:border-blue-300 transition-colors"
     >
       <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
       <div className="text-xs text-left min-w-0">
-        <div className="text-gray-700 truncate max-w-[90px]">{opt.name}</div>
+        <div className="text-gray-700 dark:text-gray-200 truncate max-w-[90px]">{opt.name}</div>
         {showDesc && opt.description && (
-          <div className="text-gray-400 truncate max-w-[90px] text-[10px]">{opt.description}</div>
+          <div className="text-gray-400 dark:text-gray-500 truncate max-w-[90px] text-[10px]">{opt.description}</div>
         )}
       </div>
     </button>
@@ -115,7 +115,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     const ungrouped = charGroups["__none__"] || [];
 
     return (
-      <div className="bg-white rounded-lg border border-gray-200 p-2 mt-2 max-h-56 overflow-y-auto">
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-2 mt-2 max-h-56 overflow-y-auto">
         {groupKeys.map((faceFile) => {
           const faceOpt = faceByFilename[faceFile];
           const chars = charGroups[faceFile];
@@ -125,9 +125,9 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
                 {faceOpt && (
                   <img src={getFileUrl(faceOpt.url)} alt={faceOpt.name} className="w-5 h-5 rounded-full object-cover" />
                 )}
-                <div className="text-[10px] text-gray-500 font-medium">
+                <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium">
                   {faceOpt?.name || faceFile}
-                  <span className="text-gray-400 ml-1">({t("char.variants", { count: chars.length })})</span>
+                  <span className="text-gray-400 dark:text-gray-500 ml-1">({t("char.variants", { count: chars.length })})</span>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5 ml-6">
@@ -139,7 +139,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
 
         {ungrouped.length > 0 && (
           <div className="mb-2">
-            <div className="text-[10px] text-gray-400 mb-1">{t("char.characters")}</div>
+            <div className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">{t("char.characters")}</div>
             <div className="flex flex-wrap gap-1.5">
               {ungrouped.map((opt) => renderOptionButton(opt))}
             </div>
@@ -148,7 +148,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
 
         {availableFaces.length > 0 && (
           <div>
-            <div className="text-[10px] text-gray-400 mb-1">{t("char.faces")}</div>
+            <div className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">{t("char.faces")}</div>
             <div className="flex flex-wrap gap-1.5">
               {availableFaces.map((opt) => renderOptionButton(opt, false))}
             </div>
@@ -156,15 +156,15 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
         )}
 
         {available.length === 0 && (
-          <div className="text-xs text-gray-400 text-center py-2">{t("char.noMore")}</div>
+          <div className="text-xs text-gray-400 dark:text-gray-500 text-center py-2">{t("char.noMore")}</div>
         )}
       </div>
     );
   };
 
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 my-2">
-      <div className="text-xs text-blue-600 font-medium mb-2">
+    <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-xl p-3 my-2">
+      <div className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-2">
         {t("char.instruction")}
       </div>
 
@@ -175,16 +175,16 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
               onClick={() => setPickingSlot(pickingSlot === i ? null : i)}
               className={`flex items-center gap-1.5 rounded-lg px-2 py-1.5 border shadow-sm transition-colors ${
                 pickingSlot === i
-                  ? "bg-blue-100 border-blue-400 ring-1 ring-blue-400"
-                  : "bg-white border-blue-300 hover:border-blue-400"
+                  ? "bg-blue-100 dark:bg-blue-900/40 border-blue-400 ring-1 ring-blue-400"
+                  : "bg-white dark:bg-gray-800 border-blue-300 dark:border-blue-600 hover:border-blue-400"
               }`}
             >
               <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
               <div className="text-xs min-w-0 text-left">
-                <div className="font-medium text-gray-700 truncate max-w-[100px]">
+                <div className="font-medium text-gray-700 dark:text-gray-200 truncate max-w-[100px]">
                   {opt.label || opt.name}
                 </div>
-                <div className="text-gray-400 truncate max-w-[100px]">
+                <div className="text-gray-400 dark:text-gray-500 truncate max-w-[100px]">
                   {opt.category === "characters" ? t("char.categoryChar") : t("char.categoryFace")}
                 </div>
               </div>
@@ -203,8 +203,8 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
             onClick={() => setPickingSlot(pickingSlot === slots.length ? null : slots.length)}
             className={`flex items-center gap-1 rounded-lg px-3 py-1.5 border border-dashed transition-colors ${
               pickingSlot === slots.length
-                ? "border-blue-400 bg-blue-100 text-blue-600"
-                : "border-gray-300 hover:border-blue-400 text-gray-400 hover:text-blue-500"
+                ? "border-blue-400 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
+                : "border-gray-300 dark:border-gray-600 hover:border-blue-400 text-gray-400 dark:text-gray-500 hover:text-blue-500"
             }`}
           >
             <span className="text-lg leading-none">+</span>

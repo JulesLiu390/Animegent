@@ -23,15 +23,15 @@ export default function ConfirmDialog({ message, onConfirm, onCancel }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onCancel}>
       <div
-        className="bg-white rounded-xl shadow-xl p-5 max-w-sm w-full mx-4"
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-5 max-w-sm w-full mx-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="text-sm text-gray-700 mb-4">{message}</p>
+        <p className="text-sm text-gray-700 dark:text-gray-200 mb-4">{message}</p>
         <div className="flex gap-2 justify-end">
           <button
             ref={cancelRef}
             onClick={onCancel}
-            className="px-4 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+            className="px-4 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
           >
             {t("common.cancel")}
           </button>

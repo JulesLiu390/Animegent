@@ -3,6 +3,7 @@ import AssetSidebar from "./components/AssetSidebar";
 import ChatPanel from "./components/ChatPanel";
 import PreviewPanel from "./components/PreviewPanel";
 import ProjectSelector from "./components/ProjectSelector";
+import WelcomePage from "./components/WelcomePage";
 import type { Asset, Assets, AttachedImage, Project } from "./api";
 import { fetchAssets, fetchProjects, createProject, deleteProject, renameProject } from "./api";
 import { LanguageProvider, useLang } from "./LanguageContext";
@@ -13,7 +14,7 @@ interface PreviewInfo {
 }
 
 function AppInner() {
-  const { lang, setLang, t } = useLang();
+  const { lang, setLang, dark, setDark, t } = useLang();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<string | null>(null);
   const [assets, setAssets] = useState<Assets>({});
@@ -120,7 +121,7 @@ function AppInner() {
   };
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       <div className="flex items-center">
         <div className="flex-1">
           <ProjectSelector
@@ -132,12 +133,20 @@ function AppInner() {
             onDelete={handleDeleteProject}
           />
         </div>
-        <button
-          onClick={() => setLang(lang === "zh" ? "en" : "zh")}
-          className="mr-4 px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-        >
-          {lang === "zh" ? "EN" : "中文"}
-        </button>
+        <div className="flex items-center gap-1.5 mr-4">
+          <button
+            onClick={() => setDark(!dark)}
+            className="px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+          >
+            {dark ? "☀️" : "🌙"}
+          </button>
+          <button
+            onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+            className="px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+          >
+            {lang === "zh" ? "EN" : "中文"}
+          </button>
+        </div>
       </div>
       <div className="flex flex-1 min-h-0">
         <AssetSidebar
@@ -146,7 +155,7 @@ function AppInner() {
           onRefresh={loadAssets}
           onAssetClick={handleAssetClick}
         />
-        <div className="flex-1 bg-gray-50">
+        <div className="flex-1 bg-gray-50 dark:bg-gray-900">
           {currentProject ? (
             <ChatPanel
               project={currentProject}
@@ -156,12 +165,7 @@ function AppInner() {
               onPendingAssetClick={handlePendingAssetClick}
             />
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-400">
-              <div className="text-center">
-                <div className="text-4xl mb-4">📁</div>
-                <div className="text-lg">{t("app.selectProject")}</div>
-              </div>
-            </div>
+            <WelcomePage onSelectProject={setCurrentProject} />
           )}
         </div>
         {preview && (

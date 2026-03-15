@@ -12,6 +12,7 @@ import InteractionModeSelector from "./InteractionModeSelector";
 import type { InteractionMode } from "./InteractionModeSelector";
 import type { FaceInfo } from "./FaceSelectCard";
 import { useLang } from "../LanguageContext";
+import MarkdownText from "./MarkdownText";
 
 interface Props {
   project: string;
@@ -47,7 +48,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationTitle, setConversationTitle] = useState("");
   const [mode, setMode] = useState<"comic" | "storyboard">("comic");
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>("plan");
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>("ask");
   const conversationIdRef = useRef<string | null>(null);
   useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
 
@@ -767,9 +768,9 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
       {/* Header with conversation history dropdown */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white shrink-0">
+      <div className="flex items-center justify-center px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shrink-0">
         <ConversationHistory
           conversations={conversations}
           currentId={conversationId}
@@ -779,21 +780,19 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
           onDelete={handleDeleteConversation}
           onRefresh={loadConversations}
         />
-        <div className="flex items-center gap-2" />
       </div>
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      {/* Messages / Empty state */}
+      <div className={`flex-1 overflow-y-auto px-44 py-4 ${messages.length === 0 ? "flex flex-col items-center justify-center" : "space-y-4"}`}>
         {messages.length === 0 && (
-          <div className="text-center text-gray-400 mt-20">
-            <div className="text-4xl mb-4">🎬</div>
+          <div className="text-center text-gray-400 dark:text-gray-500 mb-6 w-full max-w-2xl">
+            <div className="relative w-48 mb-4 mx-auto">
+              <img src="/hero.png" alt="Animegent" className="w-full" />
+              <div className="absolute inset-0 pointer-events-none" style={{
+                background: "radial-gradient(circle, transparent 30%, rgb(249 250 251) 75%)"
+              }} />
+            </div>
             <div className="text-lg font-medium">{t("chat.appName")}</div>
             <div className="text-sm mt-1">{t("chat.appSubtitle")}</div>
-            <div className="text-xs mt-4 text-gray-300">
-              {t("chat.exampleHint")}
-            </div>
-            <div className="text-xs mt-1 text-gray-300">
-              {t("chat.uploadHint")}
-            </div>
           </div>
         )}
 
@@ -833,7 +832,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                   className={`rounded-2xl px-4 py-2.5 ${
                     isUser
                       ? "bg-blue-500 text-white"
-                      : "bg-white border border-gray-200 text-gray-800"
+                      : "bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200"
                   }`}
                 >
                   {/* Attached images (user message) */}
@@ -925,7 +924,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                         </button>
                         <button
                           onClick={handleEditConfirm}
-                          className="px-2 py-0.5 text-xs bg-white text-blue-600 rounded hover:bg-gray-100"
+                          className="px-2 py-0.5 text-xs bg-white dark:bg-gray-800 text-blue-600 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
                         >
                           {t("common.send")}
                         </button>
@@ -933,17 +932,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                     </div>
                   ) : (
                     textContent && (
-                      <div className="whitespace-pre-wrap text-sm">
-                        {textContent.split(/(!\[[^\]]*\]\([^)]+\))/).map((part, i) => {
-                          const imgMatch = part.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-                          if (imgMatch) {
-                            const [, alt, url] = imgMatch;
-                            const src = url.startsWith("/") ? getFileUrl(url) : url;
-                            return <img key={i} src={src} alt={alt} className="my-2 rounded-lg max-h-64 object-contain" />;
-                          }
-                          return <span key={i}>{part}</span>;
-                        })}
-                      </div>
+                      <MarkdownText text={textContent} />
                     )
                   )}
 
@@ -962,12 +951,13 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                       "stylize_character", "generate_asset", "generate_comic_strip", "edit_asset",
                       "generate_storyboard_strip", "generate_video_clip", "detect_faces_in_image",
                     ]);
-                    const nonCardImages = allImages.filter((img) => !TOOLS_WITH_CARDS.has(img.tool));
+                    const VIDEO_EXTS = [".mp4", ".webm", ".mov"];
+                    const nonCardImages = allImages.filter((img) => !TOOLS_WITH_CARDS.has(img.tool) && !VIDEO_EXTS.some((ext) => img.path.toLowerCase().endsWith(ext)));
                     return nonCardImages.length > 0 ? (
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         {nonCardImages.map((img, j) => (
                           <a key={j} href={getFileUrl(img.url)} target="_blank" rel="noopener noreferrer">
-                            <img src={getFileUrl(img.url)} alt={img.tool} className="rounded-lg border border-gray-200 max-h-64 object-contain" />
+                            <img src={getFileUrl(img.url)} alt={img.tool} className="rounded-lg border border-gray-200 dark:border-gray-700 max-h-64 object-contain" />
                           </a>
                         ))}
                       </div>
@@ -994,12 +984,18 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       </div>
 
       {/* Input area */}
-      <div className="border-t border-gray-200 bg-white p-3">
+      <div className={`transition-all duration-500 ease-in-out ${messages.length === 0
+        ? "px-44 pb-[30vh] relative"
+        : "px-44 pt-3 pb-[72px] relative"
+      }`}>
+        {messages.length > 0 && (
+          <div className="absolute -top-10 left-0 right-0 h-10 bg-gradient-to-t from-gray-50 dark:from-gray-900 to-transparent pointer-events-none" />
+        )}
         <div
-          className={`border rounded-2xl transition-colors ${
+          className={`border rounded-2xl transition-colors bg-white dark:bg-gray-800 shadow-lg dark:shadow-gray-900/50 ${
             dragOver
-              ? "border-blue-400 bg-blue-50"
-              : "border-gray-300 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400"
+              ? "border-blue-400 bg-blue-50 dark:bg-blue-900/30"
+              : "border-gray-200 dark:border-gray-700 focus-within:border-pink-400 focus-within:ring-1 focus-within:ring-pink-400"
           }`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
@@ -1021,14 +1017,14 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                       <img
                         src={att.previewUrl || getFileUrl(att.url)}
                         alt={att.name}
-                        className="w-16 h-16 object-cover rounded-xl border border-gray-200"
+                        className="w-16 h-16 object-cover rounded-xl border border-gray-200 dark:border-gray-700"
                       />
                     ) : (
-                      <div className="h-16 flex items-center gap-1.5 rounded-xl border border-gray-200 bg-gray-50 px-2.5">
-                        <span className="text-sm text-gray-400 font-mono">
+                      <div className="h-16 flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-2.5">
+                        <span className="text-sm text-gray-400 dark:text-gray-500 font-mono">
                           {ft === "json" ? "{}" : "MD"}
                         </span>
-                        <span className="text-[10px] text-gray-500 truncate max-w-[80px]">
+                        <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate max-w-[80px]">
                           {att.name}
                         </span>
                       </div>
@@ -1043,7 +1039,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                 );
               })}
               {uploading && (
-                <div className="w-16 h-16 rounded-xl border border-dashed border-gray-300 flex items-center justify-center bg-gray-50">
+                <div className="w-16 h-16 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
                   <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                 </div>
               )}
@@ -1067,9 +1063,9 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
             onCompositionEnd={() => { composingRef.current = false; }}
             onPaste={handlePaste}
             placeholder={t("chat.inputPlaceholder")}
-            className="w-full resize-none border-0 bg-transparent px-4 py-2.5 text-sm focus:outline-none"
+            className="w-full resize-none border-0 bg-transparent px-4 py-2.5 text-sm focus:outline-none dark:text-gray-200 dark:placeholder-gray-500"
             style={{ maxHeight: 160 }}
-            rows={1}
+            rows={5}
           />
 
           {/* Bottom toolbar */}
@@ -1078,7 +1074,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
-                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+                className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
                 title={t("chat.uploadImage")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1113,7 +1109,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
               <button
                 onClick={handleSend}
                 disabled={!input.trim() && attachedImages.length === 0}
-                className="p-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="p-1.5 bg-pink-500 text-white rounded-lg hover:bg-pink-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 title={t("common.send")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

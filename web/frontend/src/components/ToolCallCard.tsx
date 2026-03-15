@@ -32,7 +32,9 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
   const hasError = toolCall.result && "error" in toolCall.result;
   const verdict: ImageVerdict = toolCall.verdict || "pending";
 
-  const hasImages = toolCall.images && toolCall.images.length > 0;
+  const VIDEO_EXTS = [".mp4", ".webm", ".mov"];
+  const imageOnly = toolCall.images?.filter((img) => !VIDEO_EXTS.some((ext) => img.path.toLowerCase().endsWith(ext)));
+  const hasImages = imageOnly && imageOnly.length > 0;
   const isGenTool = GENERATION_TOOLS.has(toolCall.tool);
   const showActions = isGenTool && hasImages && !isPending && !hasError;
 
@@ -66,18 +68,18 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
               {hasError ? "✗" : "✓"}
             </span>
           )}
-          <span className="text-sm font-medium text-gray-700">
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
             {toolCall.tool}
           </span>
         </div>
         <div className="flex items-center gap-2">
           {toolCall.duration_ms != null && (
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-gray-400 dark:text-gray-500">
               {formatDuration(toolCall.duration_ms)}
             </span>
           )}
           {!isPending && (
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-gray-400 dark:text-gray-500">
               {expanded ? "▲" : "▶"}
             </span>
           )}
@@ -86,14 +88,14 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
 
       {expanded && !isPending && (
         <div className="px-3 pb-2 space-y-1 border-t border-green-100">
-          <div className="text-xs text-gray-500 mt-1.5">
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
             <div className="font-medium mb-0.5">Args:</div>
             <pre className="whitespace-pre-wrap bg-white/60 rounded p-1.5 overflow-x-auto">
               {JSON.stringify(toolCall.args, null, 2)}
             </pre>
           </div>
           {toolCall.result && (
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-gray-500 dark:text-gray-400">
               <div className="font-medium mb-0.5">Result:</div>
               <pre className="whitespace-pre-wrap bg-white/60 rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto">
                 {JSON.stringify(toolCall.result, null, 2)}
@@ -106,7 +108,7 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
       {hasImages && (
         <div className="px-3 pb-2">
           <div className="grid grid-cols-2 gap-2">
-            {toolCall.images!.map((img, j) => (
+            {imageOnly!.map((img, j) => (
               <a
                 key={j}
                 href={getFileUrl(img.url)}
@@ -122,7 +124,7 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                       ? "border-red-200 opacity-40"
                       : verdict === "accepted"
                         ? "border-green-300"
-                        : "border-gray-200"
+                        : "border-gray-200 dark:border-gray-700"
                   }`}
                 />
               </a>
@@ -164,8 +166,8 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                   onClick={(e) => { e.stopPropagation(); setRevising(!revising); }}
                   className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
                     revising
-                      ? "bg-blue-100 text-blue-600"
-                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
                   {t("tool.revise")}
@@ -186,7 +188,7 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                       }
                     }}
                     placeholder={t("tool.revisePlaceholder")}
-                    className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+                    className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-200"
                     autoFocus
                     onClick={(e) => e.stopPropagation()}
                   />

@@ -111,11 +111,11 @@ export default function ConversationHistory({
       {/* Trigger: title + chevron */}
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-colors max-w-[300px]"
+        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors max-w-[300px]"
       >
         <span className="truncate">{displayTitle}</span>
         <svg
-          className={`w-3.5 h-3.5 shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500 transition-transform ${open ? "rotate-180" : ""}`}
           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
         >
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
@@ -123,11 +123,11 @@ export default function ConversationHistory({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full mt-1 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+        <div className="absolute left-0 top-full mt-1 w-80 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl z-50 overflow-hidden">
           {/* Search */}
           <div className="px-3 pt-3 pb-2">
-            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-gray-50 rounded-lg border border-gray-200">
-              <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
+              <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <circle cx="11" cy="11" r="8" />
                 <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
               </svg>
@@ -137,7 +137,7 @@ export default function ConversationHistory({
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t("history.search")}
-                className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 outline-none"
+                className="flex-1 bg-transparent text-sm text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 outline-none"
               />
             </div>
           </div>
@@ -146,7 +146,7 @@ export default function ConversationHistory({
           <div className="px-3 pb-2">
             <button
               onClick={() => { onNew(); setOpen(false); setSearch(""); }}
-              className="w-full flex items-center gap-2 px-2.5 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+              className="w-full flex items-center gap-2 px-2.5 py-2 text-sm text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -156,15 +156,15 @@ export default function ConversationHistory({
           </div>
 
           {/* Conversation list */}
-          <div className="max-h-80 overflow-y-auto border-t border-gray-100">
+          <div className="max-h-80 overflow-y-auto border-t border-gray-100 dark:border-gray-700">
             {groups.length === 0 ? (
-              <div className="py-8 text-center text-sm text-gray-400">
+              <div className="py-8 text-center text-sm text-gray-400 dark:text-gray-500">
                 {t("history.noHistory")}
               </div>
             ) : (
               groups.map((group) => (
                 <div key={group.label}>
-                  <div className="px-4 py-1.5 text-[11px] font-medium text-gray-400 uppercase tracking-wider bg-gray-50/80">
+                  <div className="px-4 py-1.5 text-[11px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider bg-gray-50/80 dark:bg-gray-900/80">
                     {group.label}
                   </div>
                   {group.items.map((conv) => {
@@ -175,8 +175,8 @@ export default function ConversationHistory({
                         onClick={() => { onSelect(conv); setOpen(false); setSearch(""); }}
                         className={`group flex items-center gap-2 px-4 py-2 cursor-pointer transition-colors ${
                           isCurrent
-                            ? "bg-blue-50 border-l-2 border-blue-500"
-                            : "hover:bg-gray-50 border-l-2 border-transparent"
+                            ? "bg-blue-50 dark:bg-blue-900/30 border-l-2 border-blue-500"
+                            : "hover:bg-gray-50 dark:hover:bg-gray-700 border-l-2 border-transparent"
                         }`}
                       >
                         {/* Active indicator */}
@@ -184,23 +184,23 @@ export default function ConversationHistory({
 
                         {/* Content */}
                         <div className="flex-1 min-w-0">
-                          <div className={`text-sm truncate ${isCurrent ? "font-medium text-gray-900" : "text-gray-700"}`}>
+                          <div className={`text-sm truncate ${isCurrent ? "font-medium text-gray-900 dark:text-gray-100" : "text-gray-700 dark:text-gray-200"}`}>
                             {conv.title || t("history.untitled")}
                           </div>
-                          <div className="text-xs text-gray-400">
+                          <div className="text-xs text-gray-400 dark:text-gray-500">
                             {t("history.messages", { count: conv.message_count })}
                           </div>
                         </div>
 
                         {/* Time + actions */}
                         <div className="flex items-center gap-1 shrink-0">
-                          <span className="text-[11px] text-gray-400">{timeAgo(conv.updated_at)}</span>
+                          <span className="text-[11px] text-gray-400 dark:text-gray-500">{timeAgo(conv.updated_at)}</span>
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setDeleteId(conv.id);
                             }}
-                            className="p-0.5 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="p-0.5 text-gray-300 dark:text-gray-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                             title={t("history.delete")}
                           >
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

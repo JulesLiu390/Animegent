@@ -11,7 +11,7 @@ interface Props {
 export default function MessageActions({ role, onCopy, onEdit, onRetry, onDelete }: Props) {
   const { t } = useLang();
   const btnClass =
-    "p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors";
+    "p-1 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors";
 
   return (
     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity mt-1">

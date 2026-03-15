@@ -74,12 +74,12 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
     const progress = totalActive > 0 ? Math.round((doneCount / totalActive) * 100) : 0;
 
     return (
-      <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 my-2">
+      <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 my-2">
         <div className="flex items-center justify-between mb-2">
-          <div className="text-xs font-medium text-gray-600">{t("plan.title")}</div>
-          <div className="text-[10px] text-gray-400">{doneCount}/{totalActive}</div>
+          <div className="text-xs font-medium text-gray-600 dark:text-gray-300">{t("plan.title")}</div>
+          <div className="text-[10px] text-gray-400 dark:text-gray-500">{doneCount}/{totalActive}</div>
         </div>
-        <div className="w-full h-1.5 bg-gray-200 rounded-full mb-2 overflow-hidden">
+        <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mb-2 overflow-hidden">
           <div
             className="h-full bg-blue-500 rounded-full transition-all duration-500"
             style={{ width: `${progress}%` }}
@@ -98,12 +98,12 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
                   ) : isActive ? (
                     <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                   ) : isSkipped ? (
-                    <span className="text-gray-300">—</span>
+                    <span className="text-gray-300 dark:text-gray-600">—</span>
                   ) : (
-                    <span className="text-gray-300">○</span>
+                    <span className="text-gray-300 dark:text-gray-600">○</span>
                   )}
                 </span>
-                <span className={`${isDone ? "text-gray-500" : isActive ? "text-blue-600 font-medium" : "text-gray-500"}`}>
+                <span className={`${isDone ? "text-gray-500 dark:text-gray-400" : isActive ? "text-blue-600 dark:text-blue-400 font-medium" : "text-gray-500 dark:text-gray-400"}`}>
                   {step.label}
                 </span>
                 {step.needs_confirm && !isSkipped && !isDone && (
@@ -115,7 +115,7 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
         </div>
 
         {paused && nextPendingStep && (
-          <div className="mt-3 pt-3 border-t border-gray-200">
+          <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
             <div className="text-xs text-blue-600 font-medium mb-2">
               {t("plan.nextStep")}{nextPendingStep.label}
             </div>
@@ -135,7 +135,7 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
                     }
                   }}
                   placeholder={t("plan.instructionPlaceholder")}
-                  className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+                  className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-200"
                   autoFocus
                 />
               </div>
@@ -152,14 +152,14 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
               <button
                 onClick={() => { setGateRevising(false); setGateReviseText(""); onCancel?.(); }}
                 disabled={disabled}
-                className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-200 disabled:opacity-30 transition-colors"
+                className="px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs font-medium rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-30 transition-colors"
               >
                 {t("common.cancel")}
               </button>
               <button
                 onClick={() => setGateRevising(!gateRevising)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                  gateRevising ? "bg-blue-100 text-blue-600" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  gateRevising ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                 }`}
               >
                 {t("plan.addInstruction")}
@@ -182,15 +182,15 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
               key={step.id}
               onClick={() => toggleStep(step.id)}
               className={`w-full flex items-center gap-2 text-xs text-left px-2 py-1.5 rounded-lg transition-colors ${
-                isEnabled ? "bg-white border border-blue-200" : "bg-gray-100 border border-gray-200 opacity-50"
+                isEnabled ? "bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700" : "bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 opacity-50"
               }`}
             >
               <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${
-                isEnabled ? "bg-blue-500 border-blue-500 text-white" : "border-gray-300"
+                isEnabled ? "bg-blue-500 border-blue-500 text-white" : "border-gray-300 dark:border-gray-600"
               }`}>
                 {isEnabled && <span className="text-[10px]">✓</span>}
               </div>
-              <span className="text-gray-700">{step.id}. {step.label}</span>
+              <span className="text-gray-700 dark:text-gray-200">{step.id}. {step.label}</span>
               {step.needs_confirm && (
                 <span className="text-[10px] text-blue-400 bg-blue-50 px-1 rounded ml-auto">{t("plan.needsConfirm")}</span>
               )}
@@ -214,7 +214,7 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
               }
             }}
             placeholder={t("plan.revisePlaceholder")}
-            className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+            className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 dark:bg-gray-700 dark:text-gray-200"
             autoFocus
           />
           <button
@@ -242,12 +242,12 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
             onChange={(e) => setAutoExec(e.target.checked)}
             className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-400"
           />
-          <span className="text-[10px] text-gray-500 whitespace-nowrap">{t("plan.autoExecute")}</span>
+          <span className="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">{t("plan.autoExecute")}</span>
         </label>
         <button
           onClick={() => setRevising(!revising)}
           className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-            revising ? "bg-blue-100 text-blue-600" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+            revising ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
           }`}
         >
           {t("plan.modifyPlan")}

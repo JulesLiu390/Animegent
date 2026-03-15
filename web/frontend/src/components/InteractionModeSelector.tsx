@@ -17,7 +17,7 @@ export default function InteractionModeSelector({ mode, onChange, disabled }: Pr
   ];
 
   return (
-    <div className="flex items-center bg-gray-100 rounded-md p-0.5 text-[11px]">
+    <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-md p-0.5 text-[11px]">
       {options.map((opt) => (
         <button
           key={opt.value}
@@ -25,8 +25,8 @@ export default function InteractionModeSelector({ mode, onChange, disabled }: Pr
           disabled={disabled}
           className={`px-2 py-0.5 rounded transition-colors ${
             mode === opt.value
-              ? "bg-white text-gray-800 shadow-sm font-medium"
-              : "text-gray-400 hover:text-gray-600"
+              ? "bg-white dark:bg-gray-600 text-gray-800 dark:text-gray-100 shadow-sm font-medium"
+              : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
           } disabled:opacity-50`}
         >
           {opt.label}

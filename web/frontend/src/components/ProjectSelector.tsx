@@ -84,13 +84,13 @@ export default function ProjectSelector({ projects, current, onSelect, onRename,
   const recentProjects = recent.filter((n) => projectNames.has(n) && n !== current);
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 bg-white border-b border-gray-200">
-      <span className="text-sm text-gray-500 shrink-0">{t("project.label")}</span>
+    <div className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+      <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">{t("project.label")}</span>
 
       <select
         value={current || ""}
         onChange={(e) => selectProject(e.target.value)}
-        className="text-sm border border-gray-300 rounded-lg px-2 py-1 bg-white focus:outline-none focus:border-blue-400 min-w-[120px]"
+        className="text-sm border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 bg-white dark:bg-gray-700 dark:text-gray-200 focus:outline-none focus:border-blue-400 min-w-[120px]"
       >
         <option value="" disabled>{t("project.select")}</option>
         {recentProjects.length > 0 && (
@@ -111,14 +111,14 @@ export default function ProjectSelector({ projects, current, onSelect, onRename,
         <>
           <button
             onClick={startRename}
-            className="text-xs text-gray-400 hover:text-blue-500 transition-colors"
+            className="px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
             title={t("project.rename")}
           >
             {t("project.rename")}
           </button>
           <button
             onClick={() => setShowDeleteConfirm(true)}
-            className="text-xs text-red-400 hover:text-red-600 transition-colors"
+            className="px-2.5 py-1 text-xs font-medium text-red-500 bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-lg transition-colors"
             title={t("project.deleteTitle")}
           >
             {t("common.delete")}
@@ -136,12 +136,12 @@ export default function ProjectSelector({ projects, current, onSelect, onRename,
               if (e.key === "Enter") handleRename();
               if (e.key === "Escape") setRenaming(false);
             }}
-            className="text-sm border border-gray-300 rounded-lg px-2 py-1 w-40 focus:outline-none focus:border-blue-400"
+            className="text-sm border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 w-40 bg-white dark:bg-gray-700 dark:text-gray-200 focus:outline-none focus:border-blue-400"
           />
-          <button onClick={handleRename} className="text-xs text-blue-500 hover:text-blue-700">
+          <button onClick={handleRename} className="px-2.5 py-1 text-xs font-medium text-white bg-pink-500 hover:bg-pink-600 rounded-lg transition-colors">
             {t("common.confirm")}
           </button>
-          <button onClick={() => setRenaming(false)} className="text-xs text-gray-400 hover:text-gray-600">
+          <button onClick={() => setRenaming(false)} className="px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">
             {t("common.cancel")}
           </button>
         </div>
@@ -166,19 +166,19 @@ export default function ProjectSelector({ projects, current, onSelect, onRename,
               if (e.key === "Escape") { setShowNew(false); setNewName(""); }
             }}
             placeholder={t("project.namePlaceholder")}
-            className="text-sm border border-gray-300 rounded-lg px-2 py-1 w-32 focus:outline-none focus:border-blue-400"
+            className="text-sm border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 w-32 bg-white dark:bg-gray-700 dark:text-gray-200 focus:outline-none focus:border-blue-400"
           />
-          <button onClick={handleCreate} className="text-xs text-blue-500 hover:text-blue-700">
+          <button onClick={handleCreate} className="px-2.5 py-1 text-xs font-medium text-white bg-pink-500 hover:bg-pink-600 rounded-lg transition-colors">
             {t("common.confirm")}
           </button>
-          <button onClick={() => { setShowNew(false); setNewName(""); }} className="text-xs text-gray-400 hover:text-gray-600">
+          <button onClick={() => { setShowNew(false); setNewName(""); }} className="px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">
             {t("common.cancel")}
           </button>
         </div>
       ) : (
         <button
           onClick={() => setShowNew(true)}
-          className="text-sm text-blue-500 hover:text-blue-700 transition-colors"
+          className="px-2.5 py-1 text-xs font-medium text-white bg-pink-500 hover:bg-pink-600 rounded-lg transition-colors"
         >
           {t("project.createNew")}
         </button>

@@ -20,6 +20,12 @@ const translations: Record<string, Record<Lang, string>> = {
   // ========== App / Layout ==========
   "app.selectProject": { zh: "请选择或新建一个项目", en: "Select or create a project" },
 
+  // ========== Welcome Page ==========
+  "welcome.title": { zh: "开始创作", en: "Start Creating" },
+  "welcome.subtitle": { zh: "选择一个项目，或从最近的作品中继续", en: "Pick a project, or continue from your recent works" },
+  "welcome.recentWorks": { zh: "最近作品", en: "Recent Works" },
+  "welcome.empty": { zh: "还没有作品，选择一个项目开始吧", en: "No works yet — select a project to get started" },
+
   // ========== Project Selector ==========
   "project.label": { zh: "项目:", en: "Project:" },
   "project.select": { zh: "选择项目", en: "Select project" },
@@ -32,7 +38,7 @@ const translations: Record<string, Record<Lang, string>> = {
   "project.all": { zh: "全部", en: "All" },
 
   // ========== Chat Panel ==========
-  "chat.appName": { zh: "AniDaily", en: "AniDaily" },
+  "chat.appName": { zh: "Animegent", en: "Animegent" },
   "chat.appSubtitle": { zh: "动画条漫生成助手", en: "Anime Comic Strip Generator" },
   "chat.exampleHint": { zh: "试试: \"帮我检测这张图中的人脸\" 或 \"生成一个穿红裙子的女孩角色\"", en: "Try: \"Detect faces in this image\" or \"Generate a girl character in a red dress\"" },
   "chat.uploadHint": { zh: "可以上传图片或点击侧边栏素材引用到对话中", en: "Upload images or click sidebar assets to reference in chat" },
@@ -139,7 +145,8 @@ const translations: Record<string, Record<Lang, string>> = {
   "cat.scenes_no_people": { zh: "场景(原图)", en: "Scenes (orig)" },
   "cat.panels": { zh: "条漫", en: "Panels" },
   "cat.scripts": { zh: "剧本", en: "Scripts" },
-  "cat.videos": { zh: "视频片段", en: "Video Clips" },
+  "cat.clips": { zh: "视频片段", en: "Clips" },
+  "cat.final_videos": { zh: "成片", en: "Final Videos" },
   "cat.storyboard_strips": { zh: "分镜条漫", en: "Storyboard Strips" },
   "cat.storyboard_frames": { zh: "分镜首帧", en: "Storyboard Frames" },
   "cat.storyboards": { zh: "分镜脚本", en: "Storyboards" },

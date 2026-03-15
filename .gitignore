@@ -14,3 +14,4 @@ logs/
 *.db
 *.db-wal
 *.db-shm
+docs/

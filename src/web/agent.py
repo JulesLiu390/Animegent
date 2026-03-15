@@ -402,7 +402,7 @@ def _save_asset_meta(file_path: Path, name: str, description: str, source_face: 
 
 
 DESCRIBE_MODEL = "gemini-2.5-flash-lite"
-DESCRIBE_PROMPT = (
+DESCRIBE_PROMPT_ZH = (
     'Analyze this image and respond with a JSON object containing exactly two fields:\n'
     '1. "name": a short snake_case name for this asset (max 4 words), suitable as a filename. '
     'Focus on the most distinctive visual features: clothing color/type, hair, accessories, scene type.\n'
@@ -412,23 +412,34 @@ DESCRIBE_PROMPT = (
     'Example: {"name": "yellow_jacket_boy", "description": "穿黄色夹克的年轻男性，短发，双手交叉"}'
 )
 
+DESCRIBE_PROMPT_EN = (
+    'Analyze this image and respond with a JSON object containing exactly two fields:\n'
+    '1. "name": a short snake_case name for this asset (max 4 words), suitable as a filename. '
+    'Focus on the most distinctive visual features: clothing color/type, hair, accessories, scene type.\n'
+    '   Examples: yellow_jacket_boy, pink_dress_girl, sunset_beach_scene, dark_alley\n'
+    '2. "description": a concise one-sentence description of what is in the image (in English).\n\n'
+    'Output ONLY valid JSON, no markdown, no extra text.\n'
+    'Example: {"name": "yellow_jacket_boy", "description": "Young male in yellow jacket, short hair, arms crossed"}'
+)
 
-def _describe_image(image_path: Path) -> dict:
+
+def _describe_image(image_path: Path, lang: str = "zh") -> dict:
     """用 VLM 生成图片的名称和描述。
 
     Returns:
-        {"name": "snake_case_name", "description": "中文描述"}
+        {"name": "snake_case_name", "description": "描述"}
     """
     try:
         from google.genai.types import GenerateContentConfig, Part
 
+        prompt = DESCRIBE_PROMPT_EN if lang == "en" else DESCRIBE_PROMPT_ZH
         client = get_genai_client(timeout=30_000)
         suffix = image_path.suffix.lower()
         mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(suffix, "image/jpeg")
         img_part = Part.from_bytes(data=image_path.read_bytes(), mime_type=mime)
         resp = client.models.generate_content(
             model=DESCRIBE_MODEL,
-            contents=[img_part, DESCRIBE_PROMPT],
+            contents=[img_part, prompt],
             config=GenerateContentConfig(temperature=0.0),
         )
         text = resp.text.strip()
@@ -511,7 +522,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
         if crop_result.cropped_paths:
             with ThreadPoolExecutor(max_workers=len(crop_result.cropped_paths)) as pool:
                 futures = {
-                    pool.submit(_describe_image, cp): i
+                    pool.submit(_describe_image, cp, lang): i
                     for i, cp in enumerate(crop_result.cropped_paths)
                 }
                 for fut in as_completed(futures):
@@ -561,7 +572,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
                 prompt=args.get("prompt"),
             )
             # VLM 描述风格化后的角色
-            desc = _describe_image(result_path)
+            desc = _describe_image(result_path, lang)
             face_filename = Path(args["face_path"]).name
             _save_asset_meta(result_path, desc["name"], desc["description"], source_face=face_filename)
             return {"output_path": str(result_path), "character_name": desc["name"], "description": desc["description"], "source_face": face_filename}
@@ -616,7 +627,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
                 reference_images=args.get("reference_images"),
             )
             # VLM 描述生成的素材
-            desc = _describe_image(result_path)
+            desc = _describe_image(result_path, lang)
             # 如果参考图来自 faces 目录，记录 source_face
             source_face = None
             ref_images = args.get("reference_images") or []
@@ -909,6 +920,13 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
             if result.returncode != 0:
                 return {"error": f"ffmpeg 合并失败: {result.stderr[:500]}"}
 
+            # Extract first frame as thumbnail
+            thumb_path = output_path.with_suffix(".png")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(output_path), "-frames:v", "1", "-q:v", "2", str(thumb_path)],
+                capture_output=True, timeout=30,
+            )
+
             return {"output_path": str(output_path), "clip_count": len(clip_paths)}
         except FileNotFoundError:
             return {"error": "ffmpeg 未安装，请先安装 ffmpeg"}
@@ -940,7 +958,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
         img_path = Path(args["image_path"])
         if not img_path.exists():
             return {"error": f"图片不存在: {args['image_path']}"}
-        desc = _describe_image(img_path)
+        desc = _describe_image(img_path, lang)
         _save_asset_meta(img_path, desc["name"], desc["description"])
         return {"name": desc["name"], "description": desc["description"], "image_path": str(img_path)}
 
@@ -1844,7 +1862,7 @@ class Agent:
                 images = [{"path": str(ff_path), "url": f"/files/{rel}?v={mtime}", "tool": tool_name}]
         if "output_path" in result:
             out_path = Path(result["output_path"])
-            if out_path.exists():
+            if out_path.exists() and out_path.suffix.lower() not in {".mp4", ".webm", ".mov"}:
                 rel = out_path.relative_to(PROJECT_ROOT)
                 mtime = int(out_path.stat().st_mtime)
                 images = (images or []) + [{"path": str(out_path), "url": f"/files/{rel}?v={mtime}", "tool": tool_name}]

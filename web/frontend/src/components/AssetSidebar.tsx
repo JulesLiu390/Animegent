@@ -12,7 +12,8 @@ const CAT_KEYS: Record<string, string> = {
   scenes: "cat.scenes_stylized",
   scenes_raw: "cat.scenes_no_people",
   panels: "cat.panels",
-  videos: "cat.videos",
+  clips: "cat.clips",
+  final_videos: "cat.final_videos",
   storyboard_strips: "cat.storyboard_strips",
   storyboard_frames: "cat.storyboard_frames",
   storyboards: "cat.storyboards",
@@ -37,7 +38,8 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
 
   // Categories that show one item per row at original aspect ratio, sorted numerically
   const SINGLE_COL_CATS = new Set(["storyboard_strips", "storyboard_frames"]);
-  const NUM_SORT_CATS = new Set(["storyboard_strips", "storyboard_frames", "clip_scripts", "videos"]);
+  const THREE_COL_CATS = new Set(["characters", "faces"]);
+  const NUM_SORT_CATS = new Set(["storyboard_strips", "storyboard_frames", "clip_scripts", "clips"]);
 
   const numSort = (a: { name: string }, b: { name: string }) => {
     const na = parseInt(a.name.match(/\d+/)?.[0] || "0", 10);
@@ -59,13 +61,13 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
   };
 
   return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
-      <div className="p-3 border-b border-gray-200 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">{t("sidebar.title")}</h2>
+    <div className="w-96 bg-pink-50 dark:bg-gray-800 border-r border-pink-200/60 dark:border-gray-700 flex flex-col h-full p-5">
+      <div className="px-2 py-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">{t("sidebar.title")}</h2>
         {onRefresh && (
           <button
             onClick={onRefresh}
-            className="text-xs text-blue-500 hover:text-blue-700"
+            className="px-2 py-0.5 text-[11px] font-medium text-pink-500 dark:text-gray-400 bg-pink-100 dark:bg-gray-700 hover:bg-pink-200 dark:hover:bg-gray-600 rounded-md transition-colors"
           >
             {t("common.refresh")}
           </button>
@@ -78,16 +80,16 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
           </div>
         )}
         {!loading && Object.entries(assets).map(([category, items]) => (
-          <div key={category} className="border-b border-gray-100">
+          <div key={category} className="border-b border-gray-100 dark:border-gray-700">
             <button
               onClick={() => toggleCategory(category)}
-              className="w-full px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide bg-gray-50 flex items-center justify-between hover:bg-gray-100 transition-colors"
+              className="w-full px-3 py-2 text-xs font-medium text-pink-400 dark:text-gray-400 uppercase tracking-wide bg-pink-100/50 dark:bg-gray-700/80 flex items-center justify-between hover:bg-pink-100 dark:hover:bg-gray-700 transition-colors"
             >
               <span>{t(CAT_KEYS[category] || category)} ({items.length})</span>
               <span className={`text-[10px] transition-transform ${collapsed[category] ? "" : "rotate-90"}`}>▶</span>
             </button>
             {!collapsed[category] && (items.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-gray-400">{t("sidebar.empty")}</div>
+              <div className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">{t("sidebar.empty")}</div>
             ) : SINGLE_COL_CATS.has(category) ? (
               <div className="p-2 flex flex-col gap-1.5">
                 {[...items].sort(numSort).map((item) => (
@@ -108,16 +110,16 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
                     <img
                       src={getFileUrl(item.url)}
                       alt={item.name}
-                      className="w-full rounded border border-gray-200 group-hover:border-blue-400 transition-colors"
+                      className="w-full rounded-xl border border-gray-200 dark:border-gray-700 group-hover:border-blue-400 transition-colors"
                     />
-                    <div className="text-[10px] text-gray-500 truncate mt-0.5 text-center">
+                    <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate mt-0.5 text-center">
                       {item.name}
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="p-2 grid grid-cols-2 gap-1.5">
+              <div className={`p-2 grid gap-1.5 ${THREE_COL_CATS.has(category) ? "grid-cols-3" : "grid-cols-2"}`}>
                 {(NUM_SORT_CATS.has(category) ? [...items].sort(numSort) : items).map((item) =>
                   item.type === "image" ? (
                     <div
@@ -137,9 +139,11 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
                       <img
                         src={getFileUrl(item.url)}
                         alt={item.name}
-                        className="w-full aspect-square object-cover rounded border border-gray-200 group-hover:border-blue-400 transition-colors"
+                        className={`w-full rounded-xl border border-gray-200 dark:border-gray-700 group-hover:border-blue-400 transition-colors ${
+                          THREE_COL_CATS.has(category) ? "object-cover" : "aspect-square object-cover"
+                        }`}
                       />
-                      <div className="text-[10px] text-gray-500 truncate mt-0.5 text-center">
+                      <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate mt-0.5 text-center">
                         {item.name}
                       </div>
                     </div>
@@ -158,17 +162,27 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
                       >
                         ×
                       </button>
-                      <div className="w-full aspect-video bg-gradient-to-br from-gray-800 to-gray-900 rounded border border-gray-200 group-hover:border-blue-400 transition-colors flex flex-col items-center justify-center gap-1">
-                        <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
-                        </svg>
-                        <span className="text-[9px] text-gray-400 truncate max-w-full px-1">{item.name}</span>
+                      <div className="relative w-full aspect-video rounded-xl border border-gray-200 dark:border-gray-700 group-hover:border-blue-400 transition-colors overflow-hidden bg-gray-900">
+                        {item.thumbnail ? (
+                          <img
+                            src={getFileUrl(item.thumbnail)}
+                            alt={item.name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : null}
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="w-6 h-6 bg-black/50 rounded-full flex items-center justify-center">
+                            <svg className="w-3 h-3 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+                            </svg>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ) : (
                     <div
                       key={item.name}
-                      className="col-span-2 px-2 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded cursor-pointer truncate group relative"
+                      className="col-span-2 px-2 py-1.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded cursor-pointer truncate group relative"
                       onClick={() => onAssetClick?.(item.path)}
                     >
                       <button

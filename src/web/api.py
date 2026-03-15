@@ -162,9 +162,8 @@ def create_project(req: ProjectCreate) -> dict:
     proj_dir.mkdir(parents=True)
     for d in _asset_dirs(req.name).values():
         d.mkdir(parents=True, exist_ok=True)
-    # 创建默认风格设定文件
-    style_path = proj_dir / "style.md"
-    style_path.write_text(
+    # 创建默认风格设定文件（中文 + 英文）
+    (proj_dir / "style.md").write_text(
         "# 漫画风格设定\n\n"
         "## 画风\n- 风格：赛璐璃动画风，干净线条，明亮色彩\n- 色调：明亮活泼\n\n"
         "## 语言\n- 对话：中文\n- 音效：日漫风拟声词\n\n"
@@ -172,6 +171,16 @@ def create_project(req: ProjectCreate) -> dict:
         "## 角色\n- 头身比：正常（5-7头身）\n- 表情：适度夸张\n\n"
         "## 基调\n- 风格：轻松搞笑，校园/职场日常\n- 节奏：中等，对话和动作均衡\n\n"
         "## 场景\n- 背景：简化但有辨识度\n- 时间：现代\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "style_en.md").write_text(
+        "# Comic Style Guide\n\n"
+        "## Art Style\n- Style: Cel-shaded anime, clean lines, bright colors\n- Tone: Bright and lively\n\n"
+        "## Language\n- Dialogue: English\n- Sound effects: Japanese manga-style onomatopoeia\n\n"
+        "## Layout\n- Direction: Vertical comic strip\n- Panels per strip: 4-6\n- Bubbles: Round speech bubbles\n\n"
+        "## Characters\n- Proportions: Normal (5-7 heads tall)\n- Expressions: Moderately exaggerated\n\n"
+        "## Tone\n- Style: Light-hearted and comedic, slice-of-life\n- Pacing: Medium, balanced dialogue and action\n\n"
+        "## Scenes\n- Backgrounds: Simplified but recognizable\n- Setting: Modern day\n",
         encoding="utf-8",
     )
     return {"name": proj_dir.name, "created": True}
@@ -265,17 +274,21 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                             item["source_face"] = file_meta["source_face"]
                     items.append(item)
         result[category] = items
-    # style.md 作为单独分类
-    style_path = _project_path(project) / "style.md"
-    if style_path.exists():
-        rel = style_path.relative_to(PROJECT_ROOT)
-        result["style"] = [{
-            "name": "style.md",
-            "path": str(style_path),
-            "url": f"/files/{rel}",
-            "type": "markdown",
-            "content": style_path.read_text(encoding="utf-8"),
-        }]
+    # style.md / style_en.md 作为单独分类
+    style_items = []
+    for style_name in ("style.md", "style_en.md"):
+        sp = _project_path(project) / style_name
+        if sp.exists():
+            rel = sp.relative_to(PROJECT_ROOT)
+            style_items.append({
+                "name": style_name,
+                "path": str(sp),
+                "url": f"/files/{rel}",
+                "type": "markdown",
+                "content": sp.read_text(encoding="utf-8"),
+            })
+    if style_items:
+        result["style"] = style_items
     return result
 
 

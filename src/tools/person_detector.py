@@ -228,14 +228,6 @@ def crop_faces(
         if cropped.mode == "RGBA":
             cropped = cropped.convert("RGB")
 
-        # 过滤模糊的人脸
-        cropped_array = np.array(cropped)
-        blur_score = _laplacian_variance(cropped_array)
-        if blur_score < blur_threshold:
-            skipped_blurry += 1
-            logger.info(f"跳过模糊的人脸: blur_score={blur_score:.1f} < {blur_threshold}")
-            continue
-
         out_path = output_dir / f"{image.stem}_face_{face_index}.jpg"
         cropped.save(out_path, quality=95)
         cropped_paths.append(out_path)

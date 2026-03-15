@@ -4,8 +4,7 @@ projects/
 *.pyc
 .venv/
 output/
-input/*
-!input/.gitkeep
+input/
 tests/*_output/
 tests/*/output/
 web/frontend/node_modules/
@@ -15,3 +14,4 @@ logs/
 *.db-wal
 *.db-shm
 docs/
+tmp/

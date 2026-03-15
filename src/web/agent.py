@@ -1457,10 +1457,13 @@ class Agent:
                 f"  - 剧本(MD): {out / 'scripts'}/\n\n"
             )
             # 自动注入风格设定
-            style_path = self.project_dir / "style.md"
+            style_path = self.project_dir / ("style_en.md" if self.lang == "en" else "style.md")
+            if not style_path.exists():
+                style_path = self.project_dir / "style.md"
             if style_path.exists():
                 style_content = style_path.read_text(encoding="utf-8").strip()
-                project_context += f"漫画风格设定（用户可编辑，生成内容时必须遵守）：\n{style_content}\n\n"
+                style_label = "Comic style guide (user-editable, must follow when generating):" if self.lang == "en" else "漫画风格设定（用户可编辑，生成内容时必须遵守）："
+                project_context += f"{style_label}\n{style_content}\n\n"
 
             # 自动注入各分类已有素材
             asset_summary = self._build_asset_summary()

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # 模型映射
 _MODEL_MAP = {
     "grok": "grok-video-3",
+    "veo": "veo3.1",
     "standard": "veo3.1",
     "fast": "veo3.1-fast-components",
     "4k": "veo3.1-4k",
@@ -71,18 +72,22 @@ def generate_video(
     out = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     out.mkdir(parents=True, exist_ok=True)
 
-    # 1. 提交任务
-    task_id = _submit_task(model, prompt, images, aspect_ratio, enhance_prompt, person_generation)
-    logger.info(f"任务已提交: {task_id}")
+    def _run(m: str) -> Path:
+        task_id = _submit_task(m, prompt, images, aspect_ratio, enhance_prompt, person_generation)
+        logger.info(f"任务已提交: {task_id} (model={m})")
+        video_url = _poll_task(task_id, poll_interval, timeout)
+        video_path = _download_video(video_url, task_id, out)
+        logger.info(f"视频已保存: {video_path}")
+        return video_path
 
-    # 2. 轮询等待完成
-    video_url = _poll_task(task_id, poll_interval, timeout)
-
-    # 3. 下载视频
-    video_path = _download_video(video_url, task_id, out)
-    logger.info(f"视频已保存: {video_path}")
-
-    return video_path
+    try:
+        return _run(model)
+    except Exception as e:
+        if mode == "grok":
+            raise
+        fallback = _MODEL_MAP["grok"]
+        logger.warning(f"{model} 失败 ({e})，fallback 到 {fallback}")
+        return _run(fallback)
 
 
 def _submit_task(

@@ -486,7 +486,7 @@ def _resolve_path(p: str, project_dir: Path | None) -> str:
     return str(path)
 
 
-def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: str = "zh") -> dict:
+def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: str = "zh", video_mode: str = "grok") -> dict:
     """执行指定 tool 并返回结果。"""
     # 自动将常见路径参数解析为绝对路径
     PATH_KEYS = [
@@ -868,7 +868,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
                 prompt=prompt,
                 images=images,
                 aspect_ratio=args.get("aspect_ratio", "16:9"),
-                mode=args.get("video_mode", "grok"),
+                mode=args.get("video_mode", video_mode),
                 output_dir=str(video_dir),
             )
             # Rename to clip_N.ext for clarity and sorting
@@ -1367,6 +1367,7 @@ class Agent:
         self.lang = lang
         self.mode = mode  # "comic" or "storyboard"
         self.interaction_mode = interaction_mode  # "ask", "edit", "plan"
+        self.video_mode = "grok"  # "grok" or "veo"
         # Plan execution state
         self.active_plan: list[dict] | None = None
         self.plan_paused: bool = False
@@ -1652,7 +1653,7 @@ class Agent:
             if len(tasks) == 1:
                 task = tasks[0]
                 t0 = time.time()
-                result = _execute_tool(task["name"], task["args"], project_dir=self.project_dir, lang=self.lang)
+                result = _execute_tool(task["name"], task["args"], project_dir=self.project_dir, lang=self.lang, video_mode=self.video_mode)
                 duration_ms = round((time.time() - t0) * 1000)
                 images = self._collect_tool_images(task["name"], result)
                 yield {"event": "tool_end", "tool": task["name"], "result": result,
@@ -1661,7 +1662,7 @@ class Agent:
             else:
                 def _run_tool(t: dict) -> tuple[dict, dict, int]:
                     t0 = time.time()
-                    res = _execute_tool(t["name"], t["args"], project_dir=self.project_dir, lang=self.lang)
+                    res = _execute_tool(t["name"], t["args"], project_dir=self.project_dir, lang=self.lang, video_mode=self.video_mode)
                     ms = round((time.time() - t0) * 1000)
                     return t, res, ms
 
@@ -1806,7 +1807,7 @@ class Agent:
                                 tool_name = fc.name
                                 tool_args = dict(fc.args) if fc.args else {}
                                 t0 = time.time()
-                                result = _execute_tool(tool_name, tool_args, project_dir=self.project_dir, lang=self.lang)
+                                result = _execute_tool(tool_name, tool_args, project_dir=self.project_dir, lang=self.lang, video_mode=self.video_mode)
                                 duration_ms = round((time.time() - t0) * 1000)
                                 images = self._collect_tool_images(tool_name, result)
                                 events.append({"event": "tool_start", "tool": tool_name, "args": tool_args, "index": -1})

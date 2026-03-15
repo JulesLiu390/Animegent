@@ -49,6 +49,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   const [conversationTitle, setConversationTitle] = useState("");
   const [mode, setMode] = useState<"comic" | "storyboard">("comic");
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("ask");
+  const [videoMode, setVideoMode] = useState<"grok" | "veo">("grok");
   const conversationIdRef = useRef<string | null>(null);
   useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
 
@@ -363,7 +364,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         project,
         abort.signal,
         lang,
-        { mode, interactionMode },
+        { mode, interactionMode, videoMode },
       );
     } catch (err) {
       if (abort.signal.aborted) {
@@ -536,7 +537,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         project,
         abort.signal,
         lang,
-        { planAction: "confirm", planSteps: steps, planAuto: autoExecute, mode, interactionMode },
+        { planAction: "confirm", planSteps: steps, planAuto: autoExecute, mode, interactionMode, videoMode },
       );
     } catch (err) {
       if (!abort.signal.aborted) {
@@ -583,7 +584,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         project,
         abort.signal,
         lang,
-        { planAction: "continue", planPrompt: prompt, mode, interactionMode },
+        { planAction: "continue", planPrompt: prompt, mode, interactionMode, videoMode },
       );
     } catch (err) {
       if (!abort.signal.aborted) {
@@ -621,15 +622,18 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   // ========== Verdict Actions ==========
 
   const setToolVerdict = (turnId: string, toolIndex: number, verdict: ImageVerdict) => {
-    setMessages((prev) =>
-      prev.map((msg) => {
+    setMessages((prev) => {
+      const updated = prev.map((msg) => {
         if (msg.turnId !== turnId || !msg.toolCalls) return msg;
         const toolCalls = msg.toolCalls.map((tc, i) =>
           i === toolIndex ? { ...tc, verdict } : tc
         );
         return { ...msg, toolCalls };
-      })
-    );
+      });
+      const cid = conversationIdRef.current;
+      if (cid) saveUIMessages(cid, updated).catch(() => {});
+      return updated;
+    });
   };
 
   const handleAccept = (turnId: string, toolIndex: number) => {
@@ -1092,8 +1096,35 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                 className="hidden"
               />
               <div className="h-4 w-px bg-gray-200" />
-              <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
-              <InteractionModeSelector mode={interactionMode} onChange={setInteractionMode} disabled={loading} />
+              <div className="flex flex-col items-center">
+                <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+                <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-none mt-0.5">{t("toolbar.mode")}</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <InteractionModeSelector mode={interactionMode} onChange={setInteractionMode} disabled={loading} />
+                <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-none mt-0.5">{t("toolbar.style")}</span>
+              </div>
+              {mode === "storyboard" && (
+                <div className="flex flex-col items-center">
+                  <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-md p-0.5 text-[11px]">
+                    {(["grok", "veo"] as const).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => setVideoMode(v)}
+                        disabled={loading}
+                        className={`px-2 py-0.5 rounded transition-colors ${
+                          videoMode === v
+                            ? "bg-white dark:bg-gray-600 text-gray-800 dark:text-gray-100 shadow-sm font-medium"
+                            : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        } disabled:opacity-50`}
+                      >
+                        {v === "grok" ? "Grok" : "Veo"}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-none mt-0.5">{t("toolbar.videoModel")}</span>
+                </div>
+              )}
             </div>
             {loading ? (
               <button

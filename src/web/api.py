@@ -367,6 +367,7 @@ class ChatRequest(BaseModel):
     plan_auto: bool = True               # auto-execute (only pause at interactive steps)
     mode: str = "comic"                  # "comic" | "storyboard"
     interaction_mode: str = "plan"       # "ask" | "edit" | "plan"
+    video_mode: str = "grok"             # "grok" | "veo"
 
 
 # 对话 agent 实例管理
@@ -447,6 +448,7 @@ async def _stream_chat(agent: Agent, cid: str, message: str, image_paths: list[s
 async def chat(req: ChatRequest):
     """SSE 流式对话接口。"""
     cid, agent = _get_agent(req.conversation_id, req.project, req.lang or "zh", req.mode, req.interaction_mode)
+    agent.video_mode = req.video_mode
 
     # Handle plan actions
     if req.plan_action == "confirm" and req.plan_steps:

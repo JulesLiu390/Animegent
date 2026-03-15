@@ -127,6 +127,11 @@ const translations: Record<string, Record<Lang, string>> = {
   "history.thisMonth": { zh: "本月", en: "This Month" },
   "history.older": { zh: "更早", en: "Older" },
 
+  // ========== Toolbar Labels ==========
+  "toolbar.mode": { zh: "模式", en: "Mode" },
+  "toolbar.style": { zh: "风格", en: "Style" },
+  "toolbar.videoModel": { zh: "视频模型", en: "Video Gen Model" },
+
   // ========== Mode Selector ==========
   "mode.comic": { zh: "条漫", en: "Comic" },
   "mode.storyboard": { zh: "分镜", en: "Storyboard" },

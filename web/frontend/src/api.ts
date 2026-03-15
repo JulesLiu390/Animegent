@@ -178,6 +178,7 @@ export interface ChatRequestOpts {
   planAuto?: boolean;
   mode?: "comic" | "storyboard";
   interactionMode?: "ask" | "edit" | "plan";
+  videoMode?: "grok" | "veo";
 }
 
 export async function streamMessage(
@@ -188,7 +189,7 @@ export async function streamMessage(
   project?: string,
   signal?: AbortSignal,
   lang?: string,
-  opts?: Partial<Pick<ChatRequestOpts, "planAction" | "planSteps" | "planPrompt" | "planAuto" | "mode" | "interactionMode">>,
+  opts?: Partial<Pick<ChatRequestOpts, "planAction" | "planSteps" | "planPrompt" | "planAuto" | "mode" | "interactionMode" | "videoMode">>,
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
@@ -205,6 +206,7 @@ export async function streamMessage(
       plan_auto: opts?.planAuto,
       mode: opts?.mode,
       interaction_mode: opts?.interactionMode,
+      video_mode: opts?.videoMode,
     }),
     signal,
   });

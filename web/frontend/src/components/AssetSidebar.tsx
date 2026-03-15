@@ -26,9 +26,10 @@ interface Props {
   loading?: boolean;
   onAssetClick?: (path: string) => void;
   onRefresh?: () => void;
+  onDeleteAsset?: (path: string) => void;
 }
 
-export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh }: Props) {
+export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh, onDeleteAsset }: Props) {
   const { t } = useLang();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -53,7 +54,7 @@ export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh 
     if (!deleteTarget) return;
     try {
       await deleteAsset(deleteTarget.path);
-      onRefresh?.();
+      onDeleteAsset?.(deleteTarget.path);
     } catch (err) {
       console.error("Delete failed:", err);
     }

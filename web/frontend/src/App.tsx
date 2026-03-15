@@ -110,6 +110,18 @@ function AppInner() {
     setPreview(null);
   };
 
+  const handleDeleteAsset = (path: string) => {
+    setAssets((prev) => {
+      const next: Assets = {};
+      for (const [cat, items] of Object.entries(prev)) {
+        const filtered = items.filter((a) => a.path !== path);
+        if (filtered.length > 0) next[cat] = filtered;
+      }
+      return next;
+    });
+    if (preview?.asset.path === path) setPreview(null);
+  };
+
   const handlePendingAssetClick = (path: string) => {
     for (const [category, items] of Object.entries(assets)) {
       const found = items.find((a) => a.path === path);
@@ -154,6 +166,7 @@ function AppInner() {
           loading={assetsLoading}
           onRefresh={loadAssets}
           onAssetClick={handleAssetClick}
+          onDeleteAsset={handleDeleteAsset}
         />
         <div className="flex-1 bg-gray-50 dark:bg-gray-900">
           {currentProject ? (

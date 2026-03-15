@@ -1338,6 +1338,8 @@ _STORYBOARD_WORKFLOW = (
     "  **以上所有步骤必须在一个 propose_plan 中完整列出。**\n"
     "  Step 2 条漫条之间串行，Step 3/Step 4 各 clip 可并发，Step 5 depends_on 所有 Step 4。\n"
     "  clip 数量必须是 4 的倍数。\n\n"
+    "  **禁止**：不要用 generate_asset 手动生成分镜帧/首帧图片。所有分镜帧必须且只能通过 generate_storyboard_strip 生成（自动切割+放大）。\n"
+    "  generate_asset 只能用于生成场景背景图（output/scenes/stylized/）。\n\n"
 )
 
 

@@ -67,6 +67,7 @@ logger.info(f"Database: {_DB_PATH}")
 app.mount("/files", StaticFiles(directory=str(PROJECT_ROOT)), name="files")
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+SUPPORTED_VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 
 
 # ========== 项目管理 ==========
@@ -89,6 +90,7 @@ def _asset_dirs(project: str) -> dict[str, Path]:
         "scenes_raw": output / "scenes" / "no_people",
         "panels": output / "panels",
         "videos": output / "videos",
+        "storyboard_strips": output / "storyboards" / "strips",
         "storyboard_frames": output / "storyboards" / "frames",
         "storyboards": output / "storyboards",
         "clip_scripts": output / "storyboards" / "clip_scripts",
@@ -175,6 +177,8 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                     }
                     if f.suffix.lower() in SUPPORTED_IMAGE_EXTS:
                         item["type"] = "image"
+                    elif f.suffix.lower() in SUPPORTED_VIDEO_EXTS:
+                        item["type"] = "video"
                     elif f.suffix.lower() == ".md":
                         item["type"] = "markdown"
                         item["content"] = f.read_text(encoding="utf-8")

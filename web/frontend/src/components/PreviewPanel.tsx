@@ -19,6 +19,7 @@ const CAT_KEYS: Record<string, string> = {
   scenes_raw: "cat.scenes_no_people",
   panels: "cat.panels",
   videos: "cat.videos",
+  storyboard_strips: "cat.storyboard_strips",
   storyboard_frames: "cat.storyboard_frames",
   storyboards: "cat.storyboards",
   clip_scripts: "cat.clip_scripts",
@@ -28,6 +29,7 @@ const CAT_KEYS: Record<string, string> = {
 export default function PreviewPanel({ asset, category, onClose, onSendToChat, onAssetUpdated }: Props) {
   const { t } = useLang();
   const isImage = asset.type === "image";
+  const isVideo = asset.type === "video";
   const isMarkdown = asset.type === "markdown";
   const isJson = asset.type === "json";
 
@@ -77,6 +79,17 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
               src={getFileUrl(asset.url)}
               alt={asset.name}
               className="max-w-full max-h-[50vh] object-contain rounded"
+            />
+          </div>
+        )}
+
+        {isVideo && (
+          <div className="bg-black rounded-lg border border-gray-100 mb-3 overflow-hidden">
+            <video
+              key={asset.url}
+              src={getFileUrl(asset.url)}
+              controls
+              className="w-full max-h-[50vh]"
             />
           </div>
         )}

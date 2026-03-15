@@ -4,7 +4,7 @@ export interface Asset {
   name: string;
   path: string;
   url: string;
-  type?: "image" | "markdown" | "json";
+  type?: "image" | "markdown" | "json" | "video";
   content?: string;
   description?: string;
   source_face?: string;

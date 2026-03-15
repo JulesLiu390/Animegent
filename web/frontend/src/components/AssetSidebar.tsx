@@ -12,6 +12,7 @@ const CAT_KEYS: Record<string, string> = {
   scenes_raw: "cat.scenes_no_people",
   panels: "cat.panels",
   videos: "cat.videos",
+  storyboard_strips: "cat.storyboard_strips",
   storyboard_frames: "cat.storyboard_frames",
   storyboards: "cat.storyboards",
   clip_scripts: "cat.clip_scripts",
@@ -30,6 +31,16 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
 
   const toggleCategory = (category: string) => {
     setCollapsed((prev) => ({ ...prev, [category]: !prev[category] }));
+  };
+
+  // Categories that show one item per row at original aspect ratio, sorted numerically
+  const SINGLE_COL_CATS = new Set(["storyboard_strips", "storyboard_frames"]);
+  const NUM_SORT_CATS = new Set(["storyboard_strips", "storyboard_frames", "clip_scripts", "videos"]);
+
+  const numSort = (a: { name: string }, b: { name: string }) => {
+    const na = parseInt(a.name.match(/\d+/)?.[0] || "0", 10);
+    const nb = parseInt(b.name.match(/\d+/)?.[0] || "0", 10);
+    return na - nb;
   };
 
   const handleDelete = async (name: string, path: string) => {
@@ -67,9 +78,37 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
             </button>
             {!collapsed[category] && (items.length === 0 ? (
               <div className="px-3 py-2 text-xs text-gray-400">{t("sidebar.empty")}</div>
+            ) : SINGLE_COL_CATS.has(category) ? (
+              <div className="p-2 flex flex-col gap-1.5">
+                {[...items].sort(numSort).map((item) => (
+                  <div
+                    key={item.name}
+                    className="cursor-pointer group relative"
+                    onClick={() => onAssetClick?.(item.path)}
+                  >
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(item.name, item.path);
+                      }}
+                      className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
+                    >
+                      ×
+                    </button>
+                    <img
+                      src={getFileUrl(item.url)}
+                      alt={item.name}
+                      className="w-full rounded border border-gray-200 group-hover:border-blue-400 transition-colors"
+                    />
+                    <div className="text-[10px] text-gray-500 truncate mt-0.5 text-center">
+                      {item.name}
+                    </div>
+                  </div>
+                ))}
+              </div>
             ) : (
               <div className="p-2 grid grid-cols-2 gap-1.5">
-                {items.map((item) =>
+                {(NUM_SORT_CATS.has(category) ? [...items].sort(numSort) : items).map((item) =>
                   item.type === "image" ? (
                     <div
                       key={item.name}
@@ -90,6 +129,28 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                         alt={item.name}
                         className="w-full aspect-square object-cover rounded border border-gray-200 group-hover:border-blue-400 transition-colors"
                       />
+                      <div className="text-[10px] text-gray-500 truncate mt-0.5 text-center">
+                        {item.name}
+                      </div>
+                    </div>
+                  ) : item.type === "video" ? (
+                    <div
+                      key={item.name}
+                      className="cursor-pointer group relative"
+                      onClick={() => onAssetClick?.(item.path)}
+                    >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(item.name, item.path);
+                        }}
+                        className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
+                      >
+                        ×
+                      </button>
+                      <div className="w-full aspect-video bg-gray-900 rounded border border-gray-200 group-hover:border-blue-400 transition-colors flex items-center justify-center">
+                        <span className="text-white text-lg">&#9654;</span>
+                      </div>
                       <div className="text-[10px] text-gray-500 truncate mt-0.5 text-center">
                         {item.name}
                       </div>

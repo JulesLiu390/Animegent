@@ -134,6 +134,7 @@ const translations: Record<string, Record<Lang, string>> = {
   "cat.panels": { zh: "条漫", en: "Panels" },
   "cat.scripts": { zh: "剧本", en: "Scripts" },
   "cat.videos": { zh: "视频片段", en: "Video Clips" },
+  "cat.storyboard_strips": { zh: "分镜条漫", en: "Storyboard Strips" },
   "cat.storyboard_frames": { zh: "分镜首帧", en: "Storyboard Frames" },
   "cat.storyboards": { zh: "分镜脚本", en: "Storyboards" },
   "cat.clip_scripts": { zh: "视频脚本", en: "Clip Scripts" },

@@ -82,7 +82,7 @@ def generate_video(
     video_path = _download_video(video_url, task_id, out)
     logger.info(f"视频已保存: {video_path}")
 
-    return out
+    return video_path
 
 
 def _submit_task(

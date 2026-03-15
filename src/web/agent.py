@@ -304,26 +304,22 @@ _STORYBOARD_TOOLS_EXTRA = [
             required=["character_paths", "panel_descriptions", "strip_index", "output_dir"],
         ),
     ),
-    # Step 3: 视频生成（首帧 + prompt → image-to-video）
+    # Step 4: 视频生成（只需 clip_index，自动读取首帧和 clip.md）
     FunctionDeclaration(
         name="generate_video_clip",
         description=(
-            "【Step 4】基于首帧图片生成 6 秒 16:9 视频（image-to-video）。"
-            "只传 1 张首帧图片。prompt 前 20 词最重要，格式：[动作] + [镜头运动] + [风格]。"
+            "【Step 4】基于 clip_index 生成 6 秒 16:9 视频。\n"
+            "自动从 clip_scripts/clip_N.md 读取完整视频脚本作为 prompt，\n"
+            "自动从 storyboards/frames/clip_N.png 读取首帧。\n"
+            "只需传 clip_index 即可。"
         ),
         parameters=Schema(
             type=Type.OBJECT,
             properties={
-                "first_frame": Schema(type=Type.STRING, description="首帧图片路径"),
-                "prompt": Schema(type=Type.STRING, description=(
-                    "简短视频动作描述（前 20 词最重要）。"
-                    "例如：「粉色背心女生走向蓝衣男生质问。中景缓慢推近。动画风格。」"
-                )),
-                "clip_index": Schema(type=Type.INTEGER, description="片段编号"),
-                "aspect_ratio": Schema(type=Type.STRING, description="宽高比，默认 '16:9'"),
+                "clip_index": Schema(type=Type.INTEGER, description="片段编号（从1开始）"),
                 "video_mode": Schema(type=Type.STRING, description="生成模型：'grok'（默认）、'standard'、'fast'、'4k'"),
             },
-            required=["first_frame", "prompt", "clip_index"],
+            required=["clip_index"],
         ),
     ),
     # Step 5: 合并视频
@@ -484,7 +480,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
     # 自动将常见路径参数解析为绝对路径
     PATH_KEYS = [
         "image_path", "face_path", "output_path", "output_dir", "original_image_path",
-        "file_path", "directory", "scene_path",
+        "file_path", "directory", "scene_path", "first_frame",
     ]
     for key in PATH_KEYS:
         if key in args and args[key] and not Path(args[key]).is_absolute():
@@ -776,7 +772,9 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
             if not image_bytes:
                 return {"error": "Gemini 未返回条漫图"}
 
-            strip_path = out_dir / f"strip_{strip_index}.png"
+            strips_dir = out_dir.parent / "strips"
+            strips_dir.mkdir(parents=True, exist_ok=True)
+            strip_path = strips_dir / f"strip_{strip_index}.png"
             strip_path.write_bytes(image_bytes)
 
             # 2. Split into panels
@@ -825,10 +823,9 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
                 raw.unlink(missing_ok=True)
 
             return {
-                "strip_path": str(strip_path),
                 "frames": output_frames,
-                "strip_index": strip_index,
                 "count": len(output_frames),
+                "strip_index": strip_index,
             }
         except Exception as e:
             return {"error": str(e)}
@@ -840,22 +837,35 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
         video_dir = project_dir / "output" / "videos" if project_dir else Path("output/videos")
         video_dir.mkdir(parents=True, exist_ok=True)
 
+        # Auto-read clip md as prompt, auto-derive first_frame
+        prompt = ""
+        first_frame = ""
+        if project_dir:
+            clip_md = project_dir / "output" / "storyboards" / "clip_scripts" / f"clip_{clip_index}.md"
+            if clip_md.exists():
+                prompt = clip_md.read_text(encoding="utf-8").strip()
+                logger.info(f"Video prompt from clip_{clip_index}.md: {prompt[:100]}")
+            else:
+                return {"error": f"clip 脚本不存在: clip_{clip_index}.md"}
+            first_frame = str(project_dir / "output" / "storyboards" / "frames" / f"clip_{clip_index}.png")
+            if not Path(first_frame).exists():
+                return {"error": f"首帧不存在: clip_{clip_index}.png"}
+
         try:
-            first_frame = args.get("first_frame", "")
             images = [first_frame] if first_frame else None
-            output_dir = generate_video(
-                prompt=args["prompt"],
+            video_path = generate_video(
+                prompt=prompt,
                 images=images,
                 aspect_ratio=args.get("aspect_ratio", "16:9"),
                 mode=args.get("video_mode", "grok"),
                 output_dir=str(video_dir),
             )
-            video_files = sorted(output_dir.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
-            if not video_files:
-                video_files = sorted(output_dir.glob("*.webm"), key=lambda f: f.stat().st_mtime, reverse=True)
-            if video_files:
-                return {"output_path": str(video_files[0]), "clip_index": clip_index}
-            return {"error": "视频生成完成但未找到输出文件"}
+            # Rename to clip_N.ext for clarity and sorting
+            renamed = video_dir / f"clip_{clip_index}{video_path.suffix}"
+            if renamed.exists() and renamed != video_path:
+                renamed.unlink()
+            video_path.rename(renamed)
+            return {"output_path": str(renamed), "first_frame": first_frame, "clip_index": clip_index}
         except Exception as e:
             return {"error": str(e)}
 
@@ -877,7 +887,8 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
                     p = Path(cp)
                     if not p.exists():
                         return {"error": f"视频文件不存在: {cp}"}
-                    f.write(f"file '{p.resolve()}'\n")
+                    escaped = str(p.resolve()).replace("'", "'\\''")
+                    f.write(f"file '{escaped}'\n")
 
             result = subprocess.run(
                 ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
@@ -1215,7 +1226,7 @@ _STORYBOARD_WORKFLOW = (
     '             "camera": "中景",\n'
     '             "action": "粉色背心女生皱眉走向黄色连帽衫男生，双手交叉质问",\n'
     '             "lines": [\n'
-    '               {{"speaker": "Jules", "text": "代码写完了吗？"}}\n'
+    '               {{"speaker": "Jules", "voice": "young_female", "text": "代码写完了吗？"}}\n'
     '             ]\n'
     '           }}\n'
     '         }},\n'
@@ -1228,7 +1239,7 @@ _STORYBOARD_WORKFLOW = (
     '             "camera": "特写",\n'
     '             "action": "黄色连帽衫男生惊慌回头，嘴角抽搐",\n'
     '             "lines": [\n'
-    '               {{"speaker": "Peize", "text": "还...还差一点！"}}\n'
+    '               {{"speaker": "Peize", "voice": "young_male", "text": "还...还差一点！"}}\n'
     '             ]\n'
     '           }}\n'
     '         }},\n'
@@ -1241,7 +1252,7 @@ _STORYBOARD_WORKFLOW = (
     '             "camera": "全景",\n'
     '             "action": "粉色背心女生坐下疯狂打字，表情专注",\n'
     '             "lines": [\n'
-    '               {{"speaker": "narrator", "text": "键盘的敲击声回荡在空荡的教室里。"}}\n'
+    '               {{"speaker": "narrator", "voice": "mature_male", "text": "键盘的敲击声回荡在空荡的教室里。"}}\n'
     '             ]\n'
     '           }}\n'
     '         }}\n'
@@ -1254,10 +1265,13 @@ _STORYBOARD_WORKFLOW = (
     "       - clip.description: 片段概括描述（直接用作视频 prompt）\n"
     "       - shot.camera: 镜头景别（全景/中景/近景/特写等）\n"
     "       - shot.action: 具体动作和表情描述\n"
-    "       - shot.lines: 台词/旁白数组，每条 {{speaker, text}}。speaker 为角色名或 'narrator'（旁白/OS）\n"
-    "         角色台词方便后期按角色分配不同音色，narrator 用旁白音色\n"
-    "     - **每个 shot 只允许一个人说话**：lines 中所有条目的 speaker 必须相同（同一个角色或同一个 narrator）。\n"
-    "       如果需要对话（A说→B回），拆成两个 clip。\n"
+    "       - shot.lines（必填）: 台词/旁白数组，每条 {{speaker, voice, text}}：\n"
+    "         - speaker: 角色名或 'narrator'（旁白/OS）\n"
+    "         - voice: 声线标签，如 young_female、young_male、mature_male、mature_female、child 等\n"
+    "           同一个角色在整部作品中 voice 必须一致\n"
+    "         - text: 台词或旁白内容\n"
+    "     - **每个 shot 必须且只能有一个人说话**：lines 不能为空，所有条目的 speaker 必须相同（同一个角色或同一个 narrator）。\n"
+    "       纯画面镜头用 narrator 旁白描述画面。如果需要对话（A说→B回），拆成两个 clip。\n"
     "     - **角色 = 外貌标签（服装+特征）**：如「粉色背心女生」「蓝衣服男人」\n"
     "       同一套衣服 = 同一个角色，只需一个 asset，表情/动作在 shot.action 中描述\n"
     "     - **shot.action 描述动作+表情**：「粉色背心女生皱眉走过来」「蓝衣服男人惊慌回头嘴角抽搐」\n"
@@ -1276,27 +1290,28 @@ _STORYBOARD_WORKFLOW = (
     "     首帧的 refine（放大）可以并发。\n\n"
     "  **Step 3: 生成视频脚本**\n"
     "  8. 对每个 clip 基于首帧 + clip.description 写视频脚本，用 write_script 保存为独立 md 文件\n"
-    "     到 output/storyboards/clip_scripts/clip_N.md（needs_confirm=true，可并发）。\n"
+    "     文件名固定为 output/storyboards/clip_scripts/clip_数字.md（如 clip_1.md、clip_2.md），不要用其他命名格式。\n"
+    "     （needs_confirm=true，可并发）\n"
     "     md 内容包含：\n"
     "     ```\n"
-    "     # Clip N\n"
     "     ## 画面描述\n"
     "     （shot.camera + shot.action 的详细描述）\n"
     "     ## 台词\n"
-    "     （shot.lines 的内容，无台词则写「无」）\n"
+    "     speaker: XXX | voice: young_female | 台词内容\n"
+    "     （必须有，纯画面镜头用 narrator 旁白）\n"
     "     ## 视频 Prompt\n"
     "     （简短视频 prompt，前 20 词最重要，格式：[动作] + [镜头运动] + [风格]）\n"
     "     ```\n"
     "     视频 prompt 规则：\n"
-    "     - 例如：「粉色背心女生走向蓝衣男生质问。缓慢推近。动画风格。No background music.」\n"
-    "     - 如果有台词，prompt 中要包含台词，并注明语言（中文加「角色说中文。」，英文加「Characters speak English.」）\n"
-    "     - **末尾必须加「No background music.」**，后期统一配乐。\n\n"
+    "     - 角色台词：「XXX说'台词'」；旁白：「Voiceover: 内容」\n"
+    "     - 例如：「粉色背心女生走向蓝衣男生说'代码写完了吗'。推近。动画风格。角色说中文。No background music.」\n"
+    "     - 例如：「粉色背心女生疯狂打字。Voiceover: 键盘的敲击声回荡在教室里。动画风格。No background music.」\n"
+    "     - 中文加「角色说中文。」，英文加「Characters speak English.」\n"
+    "     - **末尾必须加「No background music.」**\n\n"
     "  **Step 4: 生成视频**\n"
-    "  9. 对每个 clip 先用 read_script 读取对应的 clip_scripts/clip_N.md 获取视频 prompt，\n"
-    "     然后调用 generate_video_clip（needs_confirm=true，可并发）：\n"
-    "     - first_frame: 该 clip 的首帧图路径（Step 2 的输出）\n"
-    "     - prompt: clip 脚本中「## 视频 Prompt」部分的内容\n"
-    "     - clip_index, aspect_ratio: '16:9'\n\n"
+    "  9. 对每个 clip 调用 generate_video_clip（needs_confirm=true，可并发），只传 clip_index：\n"
+    "     工具自动从 clip_scripts/clip_N.md 读取完整脚本作为 prompt，\n"
+    "     自动从 storyboards/frames/clip_N.png 读取首帧。\n\n"
     "  **Step 5: 合并视频**\n"
     "  10. 所有 clip 视频生成完后，调用 merge_video_clips 合并为完整视频（depends_on 所有 Step 4）：\n"
     "     - clip_paths: 按顺序排列的所有 clip 视频路径\n"
@@ -1418,6 +1433,7 @@ class Agent:
                 f"  - 去人场景: {out / 'scenes' / 'no_people'}/\n"
                 f"  - 条漫: {out / 'panels'}/\n"
                 f"  - 视频片段: {out / 'videos'}/\n"
+                f"  - 分镜条漫(整条): {out / 'storyboards' / 'strips'}/\n"
                 f"  - 分镜脚本(JSON): {out / 'storyboards'}/\n"
                 f"  - 视频脚本(MD): {out / 'storyboards' / 'clip_scripts'}/\n"
                 f"  - 剧本(MD): {out / 'scripts'}/\n\n"
@@ -1511,9 +1527,11 @@ class Agent:
     def _build_config(self) -> GenerateContentConfig:
         tool_set = STORYBOARD_TOOLS if self.mode == "storyboard" else COMIC_TOOLS
 
-        # Ask mode: only read-only tools
+        # Filter tools by interaction mode
         if self.interaction_mode == "ask":
             tool_set = [t for t in tool_set if t.name in self.ASK_MODE_TOOLS]
+        elif self.interaction_mode == "edit":
+            tool_set = [t for t in tool_set if t.name != "propose_plan"]
 
         return GenerateContentConfig(
             system_instruction=self._build_system_instruction(),
@@ -1817,12 +1835,19 @@ class Agent:
     def _collect_tool_images(tool_name: str, result: dict) -> list[dict] | None:
         """Extract generated image info from tool result with mtime cache-busting."""
         images = None
+        # Show first_frame input image (e.g. for generate_video_clip)
+        if "first_frame" in result:
+            ff_path = Path(result["first_frame"])
+            if ff_path.exists():
+                rel = ff_path.relative_to(PROJECT_ROOT)
+                mtime = int(ff_path.stat().st_mtime)
+                images = [{"path": str(ff_path), "url": f"/files/{rel}?v={mtime}", "tool": tool_name}]
         if "output_path" in result:
             out_path = Path(result["output_path"])
             if out_path.exists():
                 rel = out_path.relative_to(PROJECT_ROOT)
                 mtime = int(out_path.stat().st_mtime)
-                images = [{"path": str(out_path), "url": f"/files/{rel}?v={mtime}", "tool": tool_name}]
+                images = (images or []) + [{"path": str(out_path), "url": f"/files/{rel}?v={mtime}", "tool": tool_name}]
         if "faces" in result and isinstance(result["faces"], list):
             face_images = []
             for face_info in result["faces"]:

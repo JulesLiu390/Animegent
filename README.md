@@ -14,6 +14,14 @@
   <img src="https://img.shields.io/badge/GenAI%20Genesis-2026-pink" />
 </p>
 
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=OhFAgBwdZ2s">
+    <img src="https://img.youtube.com/vi/OhFAgBwdZ2s/maxresdefault.jpg" alt="Animegent Demo" width="600" />
+  </a>
+  <br/>
+  <a href="https://www.youtube.com/watch?v=OhFAgBwdZ2s">Watch Demo Video</a>
+</p>
+
 ---
 
 ## What is Animegent?
@@ -23,6 +31,31 @@ Animegent turns ordinary photographs into anime-style comic strips and animated 
 Upload a photo of your friends, your family, your community. Animegent detects each face, transforms everyone into an anime character that looks like *them*, writes a story, and generates a complete manga page or animated video. The same person keeps their consistent anime identity across every panel, every scene, and every animation.
 
 You don't draw. You don't write prompts. You just talk to Animegent like a creative partner.
+
+## Screenshots
+
+<p align="center">
+  <img src="images/interface.png" alt="Animegent Interface" width="700" />
+  <br/><em>Chat with Animegent to create your story</em>
+</p>
+
+<p align="center">
+  <img src="images/Jules.png" alt="Character Stylization" width="200" />
+  <br/><em>Photo to anime character with preserved identity</em>
+</p>
+
+<p align="center">
+  <img src="images/manga.png" alt="Generated Manga" width="350" />
+  <img src="images/manga2.png" alt="Generated Manga 2" width="350" />
+  <br/><em>AI-generated multi-panel manga</em>
+</p>
+
+<p align="center">
+  <img src="images/clip_14.gif" alt="Animation Clip 1" width="230" />
+  <img src="images/clip_29.gif" alt="Animation Clip 2" width="230" />
+  <img src="images/clip_30.gif" alt="Animation Clip 3" width="230" />
+  <br/><em>Generated animation clips</em>
+</p>
 
 ## Features
 

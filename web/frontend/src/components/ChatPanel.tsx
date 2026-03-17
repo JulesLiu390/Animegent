@@ -50,6 +50,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   const [mode, setMode] = useState<"comic" | "storyboard">("comic");
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("ask");
   const [videoMode, setVideoMode] = useState<"grok" | "veo">("grok");
+  const [activeTool, setActiveTool] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
 
@@ -216,6 +217,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       }));
     },
     onToolStart: (_index: number, tool: string, args: Record<string, unknown>) => {
+      setActiveTool(tool);
       const tc: ToolCallInfo = { tool, args, pending: true };
       updateLastAssistant((msg) => ({
         ...msg,
@@ -223,6 +225,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       }));
     },
     onToolEnd: (_index: number, tool: string, result: Record<string, unknown>, durationMs: number, toolImages?: { path: string; url: string; tool: string }[]) => {
+      setActiveTool(null);
       updateLastAssistant((msg) => {
         const toolCalls = [...(msg.toolCalls || [])];
         const tcIdx = toolCalls.findIndex(
@@ -264,6 +267,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     },
     onDone: () => {
       setLoading(false);
+      setActiveTool(null);
       onNewImages?.();
       // Save all UI messages to DB for conversation restore
       const cid = conversationIdRef.current;
@@ -995,6 +999,21 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         {messages.length > 0 && (
           <div className="absolute -top-10 left-0 right-0 h-10 bg-gradient-to-t from-gray-50 dark:from-gray-900 to-transparent pointer-events-none" />
         )}
+        {loading && activeTool && (() => {
+          const skip = new Set(["read_script", "read_storyboard", "list_files"]);
+          if (skip.has(activeTool)) return null;
+          const label = t(`tool.status.${activeTool}` as any) || activeTool;
+          return (
+            <div className="flex items-center gap-2 px-3 py-1.5 mb-1.5">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+              <span className="text-xs text-pink-400 font-medium">{label}</span>
+            </div>
+          );
+        })()}
         <div
           className={`border rounded-2xl transition-colors bg-white dark:bg-gray-800 shadow-lg dark:shadow-gray-900/50 ${
             dragOver

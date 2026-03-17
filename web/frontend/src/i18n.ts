@@ -141,6 +141,24 @@ const translations: Record<string, Record<Lang, string>> = {
   "interaction.edit": { zh: "Edit", en: "Edit" },
   "interaction.plan": { zh: "Plan", en: "Plan" },
 
+  // ========== Active Tool Status ==========
+  "tool.status.detect_faces_in_image": { zh: "检测人脸中", en: "Detecting faces" },
+  "tool.status.stylize_character": { zh: "风格化角色中", en: "Stylizing character" },
+  "tool.status.edit_asset": { zh: "编辑素材中", en: "Editing asset" },
+  "tool.status.generate_asset": { zh: "生成图片中", en: "Generating image" },
+  "tool.status.generate_comic_strip": { zh: "生成条漫中", en: "Generating manga" },
+  "tool.status.generate_storyboard_strip": { zh: "生成分镜中", en: "Generating storyboard" },
+  "tool.status.generate_video_clip": { zh: "生成视频中", en: "Generating video" },
+  "tool.status.merge_video_clips": { zh: "合并视频中", en: "Merging videos" },
+  "tool.status.write_storyboard": { zh: "编写分镜脚本中", en: "Writing storyboard" },
+  "tool.status.describe_image": { zh: "分析图片中", en: "Analyzing image" },
+  "tool.status.write_script": { zh: "编写剧本中", en: "Writing script" },
+  "tool.status.update_script": { zh: "更新剧本中", en: "Updating script" },
+  "tool.status.select_characters": { zh: "选择角色中", en: "Selecting characters" },
+  "tool.status.select_faces": { zh: "选择人脸中", en: "Selecting faces" },
+  "tool.status.propose_plan": { zh: "制定计划中", en: "Planning" },
+  "tool.status.rename_asset": { zh: "重命名素材中", en: "Renaming asset" },
+
   // ========== Asset Categories ==========
   "cat.style": { zh: "风格设定", en: "Style" },
   "cat.input": { zh: "原始图片", en: "Originals" },

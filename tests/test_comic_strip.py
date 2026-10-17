@@ -1,18 +1,15 @@
-"""测试条漫生成：4个角色 + 1个场景 → 一页条漫。
+"""测试条漫生成：4个角色 + 1个场景 → 一页条漫（使用「设置」中配置的图片生成模型）。
 
 流程：
-    1. Gemini Flash 分析每张角色图 → 精确外貌描述
-    2. 角色图 + 场景图 + 精确描述 → Gemini Image 生成条漫
+    角色图 + 场景图 + 提示词 → 图片模型生成条漫
+
+运行: uv run python tests/test_comic_strip.py
 """
 
 import logging
 from pathlib import Path
 
-from google.genai.types import GenerateContentConfig, Part
-from pydantic import BaseModel
-
-from src.tools.gemini_text import analyze_multimodal
-from src.tools.models.registry import get_genai_client
+from src.providers import image as image_provider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("tests/test_comic_strip/output")
-IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 
 # 素材路径
 CHARACTER_PATHS = [
@@ -33,32 +29,11 @@ CHARACTER_PATHS = [
 SCENE_PATH = Path("output/scenes/stylized/scene_1.png")
 
 
-def _guess_mime(path: Path) -> str:
-    suffix = path.suffix.lower()
-    return {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-    }.get(suffix, "application/octet-stream")
-
-
 def generate_comic():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info("生成条漫...")
-    contents: list = []
-
-    # 角色图 + 场景图
-    for char_path in CHARACTER_PATHS:
-        contents.append(
-            Part.from_bytes(data=char_path.read_bytes(), mime_type=_guess_mime(char_path))
-        )
-    contents.append(
-        Part.from_bytes(data=SCENE_PATH.read_bytes(), mime_type=_guess_mime(SCENE_PATH))
-    )
-
-    contents.append(
+    prompt = (
         "Image 1: Character A\n"
         "Image 2: Character B\n"
         "Image 3: Character C\n"
@@ -76,31 +51,11 @@ def generate_comic():
         "Output a single vertical comic strip image."
     )
 
-    client = get_genai_client()
-    resp = client.models.generate_content(
-        model=IMAGE_MODEL,
-        contents=contents,
-        config=GenerateContentConfig(
-            response_modalities=["IMAGE", "TEXT"],
-        ),
-    )
+    result = image_provider.generate(prompt, [*CHARACTER_PATHS, SCENE_PATH], aspect_ratio="9:16")
+    if result.text:
+        logger.info(f"模型文字回复: {result.text}")
 
-    # 提取图片
-    image_bytes = None
-    if resp.candidates:
-        for part in resp.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                image_bytes = part.inline_data.data
-                break
-            if part.text:
-                logger.info(f"模型文字回复: {part.text}")
-
-    if image_bytes is None:
-        logger.error("Gemini 未返回图片")
-        return
-
-    output_path = OUTPUT_DIR / "comic_strip.png"
-    output_path.write_bytes(image_bytes)
+    output_path = image_provider.save(result, OUTPUT_DIR / "comic_strip.png")
     logger.info(f"条漫已保存: {output_path}")
 
 

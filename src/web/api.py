@@ -8,22 +8,28 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import re
 import shutil
+import threading
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src.web.agent import Agent
-from src.web.db import ConversationDB
-from src.web.serializer import content_to_dict, dict_to_content
+from src.providers import llm
+from src.providers import settings as provider_settings
+from src.web import features
+from src.web.agent import JobManager, Session, Sessions
+from src.web.agent import skills as agent_skills
+from src.web.db import ConversationDB, conversation_turns, job_view, new_id, step_view
 
 # ---- Logging: console + per-session file ----
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
@@ -43,12 +49,24 @@ logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handle
 logger = logging.getLogger(__name__)
 logger.info(f"Log file: {_log_file}")
 
-app = FastAPI(title="AniDaily API")
 
-# CORS for React dev server
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # 上次退出时还在执行的 turn / 后台任务都已中断。只在服务启动时做：测试或别的进程导入这个模块时不能动正在运行的实例
+    db.interrupt_running_turns("服务重启，任务中断")
+    jobs.recover()
+    yield
+
+
+app = FastAPI(title="AniDaily API", lifespan=lifespan)
+
+# CORS for React dev server：只允许本机 / 局域网页面调用（接口能读写 API Key 配置，不能对任意网站开放）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=(
+        r"https?://(localhost|127\.0\.0\.1|\[::1\]|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}"
+        r"|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2})(:\d+)?"
+    ),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -62,9 +80,11 @@ PROJECTS_DIR.mkdir(exist_ok=True)
 _DB_PATH = PROJECT_ROOT / "anidaily.db"
 db = ConversationDB(_DB_PATH)
 logger.info(f"Database: {_DB_PATH}")
+jobs = JobManager(db)
+sessions = Sessions(db, jobs, PROJECTS_DIR)
 
-# 静态文件服务
-app.mount("/files", StaticFiles(directory=str(PROJECT_ROOT)), name="files")
+# 静态文件服务：只暴露 projects/ 下的素材（项目根目录里还有 settings.json、.env 等含 API Key 的文件）
+app.mount("/files/projects", StaticFiles(directory=str(PROJECTS_DIR)), name="files")
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SUPPORTED_VIDEO_EXTS = {".mp4", ".webm", ".mov"}
@@ -72,10 +92,28 @@ SUPPORTED_VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 
 # ========== 项目管理 ==========
 
+_INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
 def _project_path(name: str) -> Path:
-    """返回项目根目录，校验名称安全性。"""
-    safe = Path(name).name  # 防止路径遍历
+    """返回项目根目录；名称不合法（空、. / ..、含路径分隔符等）时返回 400。"""
+    safe = (name or "").strip()
+    if not safe or safe.startswith(".") or _INVALID_NAME_CHARS.search(safe) or len(safe) > 80:
+        raise HTTPException(status_code=400, detail="项目名称不合法：不能为空、不能以 . 开头，也不能包含 / \\ : * ? \" < > |")
     return PROJECTS_DIR / safe
+
+
+def _project_file(path: str) -> Path:
+    """解析素材路径，只允许 projects/ 下的文件（防止 ../ 跳出目录）。"""
+    p = Path(path).resolve()
+    if not p.is_relative_to(PROJECTS_DIR.resolve()):
+        raise HTTPException(status_code=403, detail="只能操作项目目录下的文件")
+    return p
+
+
+def _file_url(p: Path) -> str:
+    rel = p.resolve().relative_to(PROJECT_ROOT.resolve())
+    return f"/files/{rel.as_posix()}?v={int(p.stat().st_mtime)}"
 
 
 def _asset_dirs(project: str) -> dict[str, Path]:
@@ -96,7 +134,13 @@ def _asset_dirs(project: str) -> dict[str, Path]:
         "storyboards": output / "storyboards",
         "clip_scripts": output / "storyboards" / "clip_scripts",
         "scripts": output / "scripts",
+        "drafts": output / "scripts" / "strips",  # 分镜草稿（draft_strip 写的）
+        "layouts": output / "layouts",  # 版式草图；同名的 .py 画图代码不列出来
     }
+
+
+# 分镜模式的素材分类：分镜休眠时新项目不建这些目录（已有的文件照常列出）
+_STORYBOARD_CATEGORIES = {"clips", "final_videos", "storyboard_strips", "storyboard_frames", "storyboards", "clip_scripts"}
 
 
 SHOWCASE_DIRS = ["stylized", "panels", "storyboards/strips", "storyboards/frames"]
@@ -142,14 +186,39 @@ class ProjectCreate(BaseModel):
     name: str
 
 
+def _project_info(d: Path) -> dict:
+    """项目卡片信息：封面（最近生成的图片）、素材数量、最后修改时间。"""
+    cover: tuple[float, Path] | None = None
+    count = 0
+    latest = d.stat().st_mtime
+    output = d / "output"
+    for sub in ["stylized", "panels", "storyboards/strips", "storyboards/frames", "scenes/stylized", "faces"]:
+        folder = output / sub
+        if not folder.is_dir():
+            continue
+        for f in folder.iterdir():
+            if f.is_file() and f.suffix.lower() in SUPPORTED_IMAGE_EXTS:
+                count += 1
+                mtime = f.stat().st_mtime
+                latest = max(latest, mtime)
+                if sub != "faces" and (cover is None or mtime > cover[0]):
+                    cover = (mtime, f)
+    return {
+        "name": d.name,
+        "cover": _file_url(cover[1]) if cover else None,
+        "image_count": count,
+        "updated_at": datetime.fromtimestamp(latest).isoformat(),
+    }
+
+
 @app.get("/api/projects")
 def list_projects() -> list[dict]:
-    """列出所有项目。"""
+    """列出所有项目（含封面和素材数量）。"""
     projects = []
     if PROJECTS_DIR.exists():
         for d in sorted(PROJECTS_DIR.iterdir()):
-            if d.is_dir():
-                projects.append({"name": d.name})
+            if d.is_dir() and not d.name.startswith("."):
+                projects.append(_project_info(d))
     return projects
 
 
@@ -160,7 +229,9 @@ def create_project(req: ProjectCreate) -> dict:
     if proj_dir.exists():
         return {"name": proj_dir.name, "created": False}
     proj_dir.mkdir(parents=True)
-    for d in _asset_dirs(req.name).values():
+    for category, d in _asset_dirs(proj_dir.name).items():
+        if category in _STORYBOARD_CATEGORIES and not features.STORYBOARD:
+            continue
         d.mkdir(parents=True, exist_ok=True)
     # 创建默认风格设定文件（中文 + 英文）
     (proj_dir / "style.md").write_text(
@@ -192,24 +263,38 @@ class ProjectRename(BaseModel):
 
 @app.put("/api/projects/{name}")
 def rename_project(name: str, req: ProjectRename) -> dict:
-    """重命名项目。"""
+    """重命名项目：目录改名，对话记录里的路径一起更新。"""
     old_dir = _project_path(name)
     if not old_dir.exists():
         return {"renamed": False, "error": "项目不存在"}
     new_dir = _project_path(req.new_name)
     if new_dir.exists():
         return {"renamed": False, "error": "目标名称已存在"}
+    conversation_ids = db.conversation_ids(old_dir.name)
+    if sessions.busy(conversation_ids) or any(j["status"] == "running" for cid in conversation_ids for j in db.list_jobs(cid, unfinished=True)):
+        return {"renamed": False, "error": "这个项目还有任务在执行，请等它结束后再改名"}
     old_dir.rename(new_dir)
-    return {"renamed": True, "old_name": name, "new_name": new_dir.name}
+    db.rename_project(old_dir.name, new_dir.name, [
+        (f"{old_dir}/", f"{new_dir}/"),
+        (f"/files/projects/{old_dir.name}/", f"/files/projects/{new_dir.name}/"),
+    ])
+    # 内存里的运行时还拿着旧路径：丢掉，下次按新路径重建
+    for cid in conversation_ids:
+        sessions.drop(cid)
+    return {"renamed": True, "old_name": old_dir.name, "new_name": new_dir.name}
 
 
 @app.delete("/api/projects/{name}")
 def delete_project(name: str) -> dict:
-    """删除项目。"""
+    """删除项目（含素材和对话记录）。"""
     proj_dir = _project_path(name)
     if not proj_dir.exists():
         return {"deleted": False, "error": "项目不存在"}
+    for cid in db.conversation_ids(proj_dir.name):
+        sessions.drop(cid)
+        jobs.cancel_queued(cid)
     shutil.rmtree(proj_dir)
+    db.delete_project(proj_dir.name)
     return {"deleted": True}
 
 
@@ -234,6 +319,8 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                 if f.name == "assets.json":
                     continue
                 if f.is_file():
+                    if category == "layouts" and f.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
+                        continue
                     # Split videos dir into clips vs final_videos
                     if category == "clips" and f.name.startswith("final_"):
                         continue
@@ -268,6 +355,8 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                     # 附加 assets.json 元数据
                     file_meta = meta.get(f.name)
                     if file_meta:
+                        if file_meta.get("name"):
+                            item["title"] = file_meta["name"]
                         if file_meta.get("description"):
                             item["description"] = file_meta["description"]
                         if file_meta.get("source_face"):
@@ -289,7 +378,32 @@ def list_assets(project: str) -> dict[str, list[dict]]:
             })
     if style_items:
         result["style"] = style_items
+    skill_items = _skill_assets(_project_path(project))
+    if skill_items:
+        result["skills"] = skill_items
     return result
+
+
+def _skill_assets(proj_dir: Path) -> list[dict]:
+    """技能（SKILL.md）：内置的只读；项目自己的（projects/<项目>/skills/）可以在界面里改。分镜模式休眠时不列分镜的技能。"""
+    items = []
+    for skill in agent_skills.discover(proj_dir).values():
+        if not features.STORYBOARD and skill.scopes and "comic" not in skill.scopes:
+            continue
+        try:
+            content = skill.text()
+        except (agent_skills.SkillError, OSError):
+            continue
+        item: dict[str, Any] = {
+            "name": skill.id, "path": str(skill.file), "url": "", "type": "markdown", "content": content,
+            "title": skill.name, "description": skill.description, "source": skill.source,
+        }
+        if skill.source == "project":
+            item["url"] = f"/files/{skill.file.relative_to(PROJECT_ROOT)}?v={int(skill.file.stat().st_mtime)}"
+        else:
+            item["readonly"] = True
+        items.append(item)
+    return items
 
 
 class AssetDelete(BaseModel):
@@ -298,16 +412,19 @@ class AssetDelete(BaseModel):
 
 @app.delete("/api/assets")
 def delete_asset(req: AssetDelete) -> dict:
-    """删除单个素材文件。"""
-    p = Path(req.path)
-    # 安全检查：只允许删除 projects/ 下的文件
-    if not p.exists():
+    """删除单个素材文件（同时去掉 assets.json 里的记录）。"""
+    p = _project_file(req.path)
+    if not p.is_file():
         return {"deleted": False, "error": "文件不存在"}
-    try:
-        p.relative_to(PROJECTS_DIR)
-    except ValueError:
-        return {"deleted": False, "error": "不允许删除此文件"}
     p.unlink()
+    meta_path = p.parent / "assets.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.pop(p.name, None) is not None:
+                meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            logger.warning(f"更新 {meta_path} 失败", exc_info=True)
     return {"deleted": True}
 
 
@@ -319,13 +436,9 @@ class AssetUpdate(BaseModel):
 @app.put("/api/assets")
 def update_asset(req: AssetUpdate) -> dict:
     """更新文本文件内容（md 等）。"""
-    p = Path(req.path)
-    if not p.exists():
+    p = _project_file(req.path)
+    if not p.is_file():
         return {"updated": False, "error": "文件不存在"}
-    try:
-        p.relative_to(PROJECTS_DIR)
-    except ValueError:
-        return {"updated": False, "error": "不允许修改此文件"}
     if p.suffix.lower() not in (".md", ".txt"):
         return {"updated": False, "error": "只允许编辑文本文件"}
     p.write_text(req.content, encoding="utf-8")
@@ -336,147 +449,385 @@ def update_asset(req: AssetUpdate) -> dict:
 async def upload_image(file: UploadFile, project: str) -> dict:
     """上传图片到项目目录。"""
     upload_dir = _project_path(project) / "input"
+    ext = Path(file.filename or "").suffix.lower() or ".png"
+    if ext not in SUPPORTED_IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail=f"只支持上传图片（{', '.join(sorted(SUPPORTED_IMAGE_EXTS))}）")
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     # UUID 文件名，保留原始扩展名，避免同名覆盖
-    ext = Path(file.filename).suffix or ".png"
     unique_name = f"{uuid.uuid4().hex[:8]}{ext}"
     file_path = upload_dir / unique_name
-    content = await file.read()
-    file_path.write_bytes(content)
-
-    rel = file_path.relative_to(PROJECT_ROOT)
+    file_path.write_bytes(await file.read())
     return {
         "path": str(file_path),
-        "url": f"/files/{rel}",
+        "url": _file_url(file_path),
         "name": unique_name,
     }
 
 
-# ========== 对话 (SSE 流式) ==========
+# ========== API 设置（服务商与模型） ==========
 
-class ChatRequest(BaseModel):
-    message: str = ""
-    conversation_id: str | None = None
-    image_paths: list[str] | None = None
-    project: str | None = None
-    lang: str | None = None
-    plan_action: str | None = None       # "confirm" | "continue" | "cancel"
-    plan_steps: list[dict] | None = None  # steps for "confirm"
-    plan_prompt: str | None = None        # extra instruction for "continue"
-    plan_auto: bool = True               # auto-execute (only pause at interactive steps)
-    mode: str = "comic"                  # "comic" | "storyboard"
-    interaction_mode: str = "plan"       # "ask" | "edit" | "plan"
-    video_mode: str = "grok"             # "grok" | "veo"
+class ProviderIn(BaseModel):
+    name: str
+    api_format: str = "openai_compatible"
+    base_url: str = ""
+    api_keys: list[str] | None = None  # None：保留已保存的 Key
+    models: list[str] = []
 
 
-# 对话 agent 实例管理
-_agents: dict[str, Agent] = {}
+class ModelAssignmentIn(BaseModel):
+    provider_id: str = ""
+    model: str = ""
+    format: str = ""
+    size: str = ""
 
 
-def _get_agent(conversation_id: str | None, project: str | None = None, lang: str = "zh", mode: str = "comic", interaction_mode: str = "plan") -> tuple[str, Agent]:
-    """获取或创建对话 agent，优先从内存取，其次从 DB 恢复历史。"""
-    # 1. In-memory hit
-    if conversation_id and conversation_id in _agents:
-        agent = _agents[conversation_id]
-        agent.lang = lang
-        agent.mode = mode
-        agent.interaction_mode = interaction_mode
-        return conversation_id, agent
-
-    # 2. DB restore
-    if conversation_id:
-        history_dicts = db.get_history(conversation_id)
-        if history_dicts:
-            history = [dict_to_content(d) for d in history_dicts]
-            project_dir = _project_path(project) if project else None
-            agent = Agent(project_dir=project_dir, lang=lang, history=history, mode=mode, interaction_mode=interaction_mode)
-            _agents[conversation_id] = agent
-            logger.info(f"Restored agent {conversation_id} with {len(history)} history entries (mode={mode})")
-            return conversation_id, agent
-
-    # 3. Brand new conversation
-    project_name = project or "default"
-    cid = db.create_conversation(project_name, lang)
-    project_dir = _project_path(project) if project else None
-    agent = Agent(project_dir=project_dir, lang=lang, mode=mode, interaction_mode=interaction_mode)
-    _agents[cid] = agent
-    return cid, agent
+class ModelsIn(BaseModel):
+    chat: ModelAssignmentIn | None = None
+    vision: ModelAssignmentIn | None = None
+    image: ModelAssignmentIn | None = None
+    video: ModelAssignmentIn | None = None
 
 
-def _sse_line(event: str, data: dict) -> str:
-    """格式化一行 SSE。"""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+class ProbeIn(BaseModel):
+    """获取模型列表 / 测试连接：可以用表单里新填的 Key，也可以用已保存服务商的 Key。"""
+    provider_id: str | None = None
+    api_format: str = "openai_compatible"
+    base_url: str = ""
+    api_keys: list[str] | None = None
+    model: str = ""
 
 
-async def _stream_chat(agent: Agent, cid: str, message: str, image_paths: list[str] | None) -> AsyncGenerator[str, None]:
-    """在线程中运行 agent.chat_stream()，通过 queue 推送 SSE 事件。"""
-    queue: asyncio.Queue[dict | None] = asyncio.Queue()
-    history_len_before = len(agent.history)
+def _settings_payload() -> dict:
+    """服务商列表（API Key 已脱敏）、各用途的模型分配，以及功能开关（前端据此隐藏休眠的功能）。"""
+    return {**provider_settings.public_dict(), "features": features.public()}
 
-    def _run():
+
+@app.get("/api/settings")
+def get_api_settings() -> dict:
+    """服务商列表（API Key 已脱敏）和各用途的模型分配。"""
+    return _settings_payload()
+
+
+@app.post("/api/settings/providers")
+def create_api_provider(req: ProviderIn) -> dict:
+    try:
+        provider_settings.create_provider(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _settings_payload()
+
+
+@app.put("/api/settings/providers/{provider_id}")
+def update_api_provider(provider_id: str, req: ProviderIn) -> dict:
+    try:
+        provider_settings.update_provider(provider_id, req.model_dump())
+    except KeyError:
+        raise HTTPException(status_code=404, detail="服务商不存在")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _settings_payload()
+
+
+@app.delete("/api/settings/providers/{provider_id}")
+def delete_api_provider(provider_id: str) -> dict:
+    if not provider_settings.delete_provider(provider_id):
+        raise HTTPException(status_code=404, detail="服务商不存在")
+    return _settings_payload()
+
+
+@app.put("/api/settings/models")
+def update_model_settings(req: ModelsIn) -> dict:
+    try:
+        provider_settings.update_models(req.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _settings_payload()
+
+
+def _probe_keys(req: ProbeIn) -> list[str]:
+    """表单里填了 Key 就用新填的，否则用已保存服务商的 Key；本地服务可以没有 Key。"""
+    keys = [k.strip() for k in req.api_keys or [] if k.strip()]
+    if not keys and req.provider_id:
+        provider = provider_settings.load().provider(req.provider_id)
+        if provider:
+            keys = provider.api_keys
+    return keys or [""]
+
+
+@app.post("/api/settings/models/fetch")
+def fetch_provider_models(req: ProbeIn) -> dict:
+    try:
+        return {"models": llm.fetch_models(req.api_format, req.base_url, _probe_keys(req)[0])}
+    except Exception as e:
+        return {"models": [], "error": str(e)}
+
+
+@app.post("/api/settings/test")
+def test_api_provider(req: ProbeIn) -> dict:
+    """逐个测试 Key：填了模型名就用它发一句 hi，否则测试能否获取模型列表。"""
+    results = []
+    for key in _probe_keys(req):
+        label = provider_settings.mask_key(key) if key else "（无 Key）"
         try:
-            for event in agent.chat_stream(message, image_paths=image_paths):
-                queue.put_nowait(event)
+            if req.model:
+                reply = llm.ping(req.api_format, req.base_url, key, req.model)
+                message = f"{req.model} 回复：{reply or '（空）'}"
+            else:
+                models = llm.fetch_models(req.api_format, req.base_url, key)
+                message = f"连接成功，获取到 {len(models)} 个模型"
+            results.append({"key": label, "ok": True, "message": message})
         except Exception as e:
-            logger.exception("Agent stream error")
-            queue.put_nowait({"event": "error", "message": str(e)})
-        finally:
-            # Persist new history entries to DB
-            for i in range(history_len_before, len(agent.history)):
+            results.append({"key": label, "ok": False, "message": str(e)[:300]})
+    return {"ok": any(r["ok"] for r in results), "results": results}
+
+
+# ========== 对话：Session → Turn → Step（SSE 流式） ==========
+
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+class Attachment(BaseModel):
+    path: str
+    url: str = ""
+    name: str = ""
+    fileType: str | None = None  # noqa: N815  与前端字段一致
+    content: str | None = None
+    description: str | None = None
+
+
+class RunOptions(BaseModel):
+    lang: str | None = None
+    mode: str = "comic"                  # "comic" | "storyboard"（分镜模式休眠时按 comic 处理，见 features.py）
+    interaction_mode: str = "confirm"    # "ask" 讨论 | "confirm" 生成前确认 | "auto" 自动执行
+
+
+class ChatRequest(RunOptions):
+    conversation_id: str | None = None   # 不传则新建对话
+    project: str | None = None
+    turn_id: str | None = None           # 前端生成的 turn id（可选），这样界面上可以先显示用户消息
+    text: str = ""                       # 发给模型的文字
+    display: str | None = None           # 界面上显示的文字（和 text 不同时才传）
+    attachments: list[Attachment] = []
+    title: str | None = None             # 对话标题（新对话的第一条消息）
+
+
+class ResumeRequest(RunOptions):
+    # step_id → {"approve": bool, "note"?: str}（批准 / 拒绝生成）或 {"value": ...}（卡片里的选择）
+    responses: dict[str, dict]
+
+
+class RetryRequest(RunOptions):
+    turn_id: str | None = None           # 重新生成的这一轮用的新 id（可选）
+    text: str | None = None              # 编辑后的文字；不传则原样重试
+
+
+def _new_turn_id(requested: str | None) -> str:
+    if requested and _ID_RE.match(requested) and not db.get_turn(requested):
+        return requested
+    return new_id()
+
+
+def _sse_line(event: dict) -> str:
+    return f"event: {event.get('event', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _stream(session: Session, work: Callable[[], Iterator[dict]], first: list[dict] | None = None) -> StreamingResponse:
+    """在线程里执行 work（持有这个对话的锁），把事件和后台任务的进度一起通过 SSE 推送；客户端断开时停止任务。"""
+
+    async def events() -> AsyncGenerator[str, None]:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        finished = threading.Event()
+        disconnected = threading.Event()
+
+        def emit(event: dict | None) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        def run() -> None:
+            try:
+                # 同一对话同时只跑一个任务：上一个任务刚被停止时等它收尾
+                if not session.run_lock.acquire(timeout=20):
+                    emit({"event": "error", "message": "这个对话还有任务在执行，请稍后再试"})
+                    return
                 try:
-                    db.append_history(cid, i, content_to_dict(agent.history[i]))
-                except Exception:
-                    logger.exception("Failed to persist history entry")
-            queue.put_nowait(None)  # sentinel
+                    session.cancel_event.clear()
+                    if disconnected.is_set():
+                        return  # 排队等锁的时候客户端已经断开（例如点了停止），不再执行
+                    jobs.subscribe(session.id, emit)
+                    try:
+                        for event in work():
+                            emit(event)
+                    finally:
+                        jobs.unsubscribe(session.id, emit)
+                    emit({"event": "done"})
+                finally:
+                    session.run_lock.release()
+            except Exception as e:
+                logger.exception("对话执行出错")
+                emit({"event": "error", "message": str(e) or type(e).__name__})
+            finally:
+                finished.set()
+                emit(None)
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _run)
+        loop.run_in_executor(None, run)
+        try:
+            for event in first or []:
+                yield _sse_line(event)
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # 心跳：长时间生成图片时保持连接，也能及时发现客户端已断开
+                    continue
+                if event is None:
+                    break
+                yield _sse_line(event)
+        finally:
+            disconnected.set()
+            if not finished.is_set():
+                session.stop()  # 客户端断开（关闭页面、点了停止）：停止任务
 
-    # 先发送 conversation_id
-    yield _sse_line("conversation_id", {"conversation_id": cid})
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    while True:
-        event = await queue.get()
-        if event is None:
-            break
-        event_type = event.get("event", "unknown")
-        yield _sse_line(event_type, event)
+
+def _turn_session(turn_id: str) -> tuple[dict, Session]:
+    turn = db.get_turn(turn_id)
+    session = sessions.get(turn["conversation_id"]) if turn else None
+    if not turn or not session:
+        raise HTTPException(status_code=404, detail="这条消息不存在")
+    return turn, session
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    """SSE 流式对话接口。"""
-    cid, agent = _get_agent(req.conversation_id, req.project, req.lang or "zh", req.mode, req.interaction_mode)
-    agent.video_mode = req.video_mode
+    """发送一条消息，开始新的一轮（SSE）。没有 conversation_id 时新建对话。"""
+    session = sessions.get(req.conversation_id)
+    if req.conversation_id and session is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    if session is None:
+        session = sessions.create(_project_path(req.project) if req.project else None, req.lang or "zh")
+    turn_id = _new_turn_id(req.turn_id)
+    input_data: dict = {"text": req.text.strip(), "attachments": [a.model_dump(exclude_none=True) for a in req.attachments]}
+    if req.display and req.display.strip() != input_data["text"]:
+        input_data["display"] = req.display.strip()
+    title = " ".join((req.title or req.display or req.text).split())[:60]
 
-    # Handle plan actions
-    if req.plan_action == "confirm" and req.plan_steps:
-        agent.plan_confirm(req.plan_steps, auto_execute=req.plan_auto)
-        message = req.message or "用户确认了计划，开始执行。"
-    elif req.plan_action == "continue":
-        agent.plan_continue(req.plan_prompt)
-        prompt_part = f"，补充说明：{req.plan_prompt}" if req.plan_prompt else ""
-        message = f"用户确认继续{prompt_part}。"
-    elif req.plan_action == "cancel":
-        agent.plan_cancel()
-        return {"status": "cancelled"}
-    else:
-        message = req.message or "请分析这些图片"
+    def work() -> Iterator[dict]:
+        conv = db.get_conversation(session.id)
+        if title and conv and not conv["title"]:
+            db.update_conversation(session.id, title=title)
+        yield from session.send(turn_id, input_data, lang=req.lang or "zh", mode=req.mode, interaction=req.interaction_mode)
 
-    # Auto-title on first message of a new conversation
-    if not req.conversation_id and message:
-        title = message[:50].strip()
-        db.update_conversation(cid, title=title)
+    return _stream(session, work, first=[{"event": "conversation", "conversation_id": session.id}])
 
-    return StreamingResponse(
-        _stream_chat(agent, cid, message, req.image_paths),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+
+@app.post("/api/turns/{turn_id}/resume")
+async def resume_turn(turn_id: str, req: ResumeRequest):
+    """批准 / 拒绝生成，或者提交卡片里的选择：这一轮接着执行（SSE）。"""
+    _, session = _turn_session(turn_id)
+
+    def work() -> Iterator[dict]:
+        turn = db.get_turn(turn_id)
+        if not turn or turn["status"] not in ("awaiting_approval", "awaiting_input"):
+            yield {"event": "error", "message": "这一轮已经不在等待操作了"}
+            return
+        yield from session.resume(turn, req.responses, lang=req.lang or "zh", mode=req.mode, interaction=req.interaction_mode)
+
+    return _stream(session, work)
+
+
+@app.post("/api/turns/{turn_id}/retry")
+async def retry_turn(turn_id: str, req: RetryRequest):
+    """从这一轮重新开始（重试 / 编辑后重新发送）：这一轮及之后的内容删掉，用同样（或编辑后）的输入重新执行（SSE）。"""
+    turn, session = _turn_session(turn_id)
+    if turn["legacy"]:
+        raise HTTPException(status_code=400, detail="旧版对话的消息不能重试")
+    new_turn_id = _new_turn_id(req.turn_id)
+
+    def work() -> Iterator[dict]:
+        current = db.get_turn(turn_id)
+        if not current:
+            yield {"event": "error", "message": "这条消息不存在"}
+            return
+        input_data = dict(current["input"] or {})
+        if req.text is not None:
+            input_data["text"] = req.text.strip()
+            input_data.pop("display", None)
+        session.rewind(current)
+        yield from session.send(new_turn_id, input_data, lang=req.lang or "zh", mode=req.mode, interaction=req.interaction_mode)
+
+    return _stream(session, work)
+
+
+@app.delete("/api/turns/{turn_id}")
+def delete_turn(turn_id: str) -> dict:
+    """删除这一轮及之后的内容，模型也会忘掉这些内容。"""
+    turn, session = _turn_session(turn_id)
+    if turn["legacy"]:
+        raise HTTPException(status_code=400, detail="旧版对话的消息不能删除")
+    if not session.run_lock.acquire(timeout=20):
+        raise HTTPException(status_code=409, detail="这个对话还有任务在执行，请先停止")
+    try:
+        deleted = session.rewind(turn)
+    finally:
+        session.run_lock.release()
+    return {"deleted": deleted}
+
+
+class StopRequest(BaseModel):
+    conversation_id: str
+
+
+@app.post("/api/chat/stop")
+def stop_chat(req: StopRequest) -> dict:
+    """停止对话里正在执行的任务；没有任务在跑时，最后一轮如果在等批准 / 选择，按停止处理，排队的后台任务取消。"""
+    session = sessions.get(req.conversation_id)
+    if not session:
+        return {"stopping": False}
+    running = session.run_lock.locked()
+    session.stop()
+    if not running and session.run_lock.acquire(timeout=5):
+        try:
+            for _ in session.settle("用户已停止"):
+                pass
+            jobs.cancel_queued(session.id)
+        finally:
+            session.run_lock.release()
+    return {"stopping": running}
+
+
+class StepUpdate(BaseModel):
+    verdict: str | None = None
+
+
+@app.patch("/api/steps/{step_id}")
+def update_step(step_id: str, req: StepUpdate) -> dict:
+    """记录用户对生成结果的处理：accepted 满意 / rejected 删除 / revised 要求修改。"""
+    step = db.get_step(step_id)
+    if not step:
+        raise HTTPException(status_code=404, detail="不存在")
+    if req.verdict not in (None, "accepted", "rejected", "revised"):
+        raise HTTPException(status_code=400, detail="verdict 不合法")
+    step = db.update_step(step_id, verdict=req.verdict)
+    return step_view(step, db.get_job(step["job_id"]) if step["job_id"] else None)
+
+
+@app.get("/api/conversations/{conversation_id}/jobs")
+def list_jobs(conversation_id: str, ids: str = "", active: bool = False) -> list[dict]:
+    """后台生成任务的状态（前端在对话流结束后轮询）。ids：逗号分隔；active：只要还没结束的。"""
+    id_list = [i for i in ids.split(",") if i]
+    rows = db.list_jobs(conversation_id, ids=id_list) if id_list else db.list_jobs(conversation_id, unfinished=active) if active else db.list_jobs(conversation_id)
+    return [job_view(j) for j in rows]
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    """取消还在排队的生成任务（已经开始生成的会照常完成）。"""
+    job = jobs.cancel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return job_view(job)
 
 
 # ========== 对话历史 ==========
@@ -487,27 +838,31 @@ def list_conversations(project: str) -> list[dict]:
     return db.list_conversations(project)
 
 
+class ConversationUpdate(BaseModel):
+    title: str
+
+
+@app.put("/api/conversations/{conversation_id}")
+def update_conversation(conversation_id: str, req: ConversationUpdate) -> dict:
+    """修改对话标题。"""
+    if not db.get_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="对话不存在")
+    db.update_conversation(conversation_id, title=" ".join(req.title.split())[:60])
+    return {"updated": True}
+
+
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str) -> dict:
-    """删除对话及其历史。"""
-    _agents.pop(conversation_id, None)
+    """删除对话（历史、每一轮、后台任务一起删除）。"""
+    sessions.drop(conversation_id)
+    jobs.cancel_queued(conversation_id)
     db.delete_conversation(conversation_id)
     return {"deleted": True}
 
 
-class SaveMessagesRequest(BaseModel):
-    conversation_id: str
-    messages: list[dict]
-
-
-@app.post("/api/conversations/{conversation_id}/messages")
-def save_ui_messages(conversation_id: str, req: SaveMessagesRequest) -> dict:
-    """替换保存前端 UI 消息（清除旧消息后重新写入）。"""
-    db.replace_ui_messages(conversation_id, req.messages)
-    return {"saved": len(req.messages)}
-
-
-@app.get("/api/conversations/{conversation_id}/messages")
-def get_ui_messages(conversation_id: str) -> list[dict]:
-    """获取对话的 UI 消息。"""
-    return db.get_ui_messages(conversation_id)
+@app.get("/api/conversations/{conversation_id}/turns")
+def list_turns(conversation_id: str) -> list[dict]:
+    """对话的每一轮（含模型文字、工具调用、后台任务状态），前端据此渲染。"""
+    if not db.get_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return conversation_turns(db, conversation_id)

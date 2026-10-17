@@ -1,39 +1,89 @@
-import { useMemo, useState } from "react";
-import type { CharacterOption } from "../api";
+import { useMemo, useState, type ReactNode } from "react";
+import type { CharacterOption, SelectionState } from "../api";
 import { getFileUrl } from "../api";
-import { useLang } from "../LanguageContext";
+import { useLang, useLightbox } from "../hooks";
+import Icon from "./Icon";
 
 interface Props {
   options: CharacterOption[];
+  selection?: SelectionState;
+  /** 只读：旧版本保存的、已经过时的选择卡片 */
+  interactive: boolean;
+  busy: boolean;
   onConfirm: (selected: CharacterOption[]) => void;
-  disabled?: boolean;
 }
 
 function groupByFace(items: CharacterOption[]) {
   const groups: Record<string, CharacterOption[]> = {};
   for (const opt of items) {
-    const key = opt.source_face || "__none__";
-    (groups[key] ??= []).push(opt);
+    (groups[opt.source_face || "__none__"] ??= []).push(opt);
   }
   return groups;
 }
 
-export default function CharacterSelectCard({ options, onConfirm, disabled }: Props) {
+const displayName = (opt: { label?: string; name: string }) => opt.label || opt.name;
+
+export default function CharacterSelectCard({ options, selection, interactive, busy, onConfirm }: Props) {
   const { t } = useLang();
-  const [slots, setSlots] = useState<CharacterOption[]>(() =>
-    options.filter((o) => o.selected)
-  );
+  const openLightbox = useLightbox();
+  const [slots, setSlots] = useState<CharacterOption[]>(() => options.filter((o) => o.selected));
   const [pickingSlot, setPickingSlot] = useState<number | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
 
   const selectedPaths = new Set(slots.map((s) => s.path));
+  const available = options.filter((o) => !selectedPaths.has(o.path));
+  const availableChars = available.filter((o) => o.category === "characters");
+  const availableFaces = available.filter((o) => o.category === "faces");
+  const charGroups = groupByFace(availableChars);
+  const faceByFilename = useMemo(() => {
+    const map: Record<string, CharacterOption> = {};
+    for (const o of options) if (o.category === "faces") map[o.filename] = o;
+    return map;
+  }, [options]);
 
-  const replaceSlot = (index: number, opt: CharacterOption) => {
-    setSlots((prev) => {
-      const next = [...prev];
-      next[index] = opt;
-      return next;
-    });
+  const header = (title: string, hint?: string, done?: boolean) => (
+    <div className="mb-2.5 flex items-center gap-2">
+      <span className={`flex h-6 w-6 items-center justify-center rounded-md ${done ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400" : "bg-brand-50 text-brand-500 dark:bg-brand-500/10 dark:text-brand-400"}`}>
+        <Icon name={done ? "check" : "users"} className="h-3.5 w-3.5" />
+      </span>
+      <span className="text-[13px] font-semibold text-zinc-800 dark:text-zinc-100">{title}</span>
+      {hint && <span className="truncate text-[11px] text-zinc-400">{hint}</span>}
+    </div>
+  );
+
+  const avatarRow = (items: { path: string; url: string; name: string; label?: string }[]) => (
+    <div className="flex flex-wrap gap-2">
+      {items.map((item) => (
+        <div key={item.path} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-1 pr-2.5 dark:border-zinc-700 dark:bg-zinc-800/60">
+          <img src={getFileUrl(item.url)} alt="" className="h-8 w-8 rounded-md object-cover object-top" />
+          <span className="text-xs font-medium text-zinc-700 dark:text-zinc-200">{displayName(item)}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  const card = (children: ReactNode) => (
+    <div className="rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/70">{children}</div>
+  );
+
+  if (selection?.confirmed) {
+    return card(<>{header(t("char.confirmed", { count: selection.items.length }), undefined, true)}{avatarRow(selection.items)}</>);
+  }
+
+  if (!interactive) {
+    const pre = options.filter((o) => o.selected);
+    return card(<>{header(t("char.expired"))}{pre.length > 0 ? avatarRow(pre) : <div className="text-xs text-zinc-400">—</div>}</>);
+  }
+
+  if (options.length === 0) {
+    return card(<>{header(t("char.instruction"))}<div className="text-xs text-zinc-500 dark:text-zinc-400">{t("char.none")}</div></>);
+  }
+
+  const pick = (opt: CharacterOption) => {
+    if (pickingSlot !== null && pickingSlot < slots.length) {
+      setSlots((prev) => prev.map((s, i) => (i === pickingSlot ? opt : s)));
+    } else {
+      setSlots((prev) => [...prev, opt]);
+    }
     setPickingSlot(null);
   };
 
@@ -42,158 +92,50 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     if (pickingSlot === index) setPickingSlot(null);
   };
 
-  const addSlot = (opt: CharacterOption) => {
-    setSlots((prev) => [...prev, opt]);
-    setPickingSlot(null);
-  };
-
-  const handleConfirm = () => {
-    setConfirmed(true);
-    onConfirm(slots);
-  };
-
-  const available = options.filter((o) => !selectedPaths.has(o.path));
-
-  const faceByFilename = useMemo(() => {
-    const map: Record<string, CharacterOption> = {};
-    for (const o of options) {
-      if (o.category === "faces") {
-        map[o.filename] = o;
-      }
-    }
-    return map;
-  }, [options]);
-
-  const availableChars = available.filter((o) => o.category === "characters");
-  const availableFaces = available.filter((o) => o.category === "faces");
-  const charGroups = useMemo(() => groupByFace(availableChars), [availableChars]);
-
-  if (confirmed) {
-    return (
-      <div className="bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700 rounded-xl p-3 my-2">
-        <div className="text-xs text-green-600 dark:text-green-400 font-medium mb-2">
-          {t("char.confirmed", { count: slots.length })}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {slots.map((opt) => (
-            <div key={opt.path} className="flex items-center gap-1.5 bg-white dark:bg-gray-800 rounded-lg px-2 py-1 border border-green-200 dark:border-green-700">
-              <img src={getFileUrl(opt.url)} alt={opt.name} className="w-8 h-8 rounded object-cover" />
-              <div className="text-xs font-medium text-gray-700 dark:text-gray-200">{opt.label || opt.name}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const handlePickerClick = (opt: CharacterOption) => {
-    if (pickingSlot !== null && pickingSlot < slots.length) {
-      replaceSlot(pickingSlot, opt);
-    } else {
-      addSlot(opt);
-    }
-  };
-
-  const renderOptionButton = (opt: CharacterOption, showDesc = true) => (
+  const optionButton = (opt: CharacterOption) => (
     <button
       key={opt.path}
-      onClick={() => handlePickerClick(opt)}
-      className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg px-2 py-1.5 border border-gray-200 dark:border-gray-700 hover:border-blue-300 transition-colors"
+      onClick={() => pick(opt)}
+      title={opt.description || opt.name}
+      className="group w-[72px] text-left"
     >
-      <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
-      <div className="text-xs text-left min-w-0">
-        <div className="text-gray-700 dark:text-gray-200 truncate max-w-[90px]">{opt.name}</div>
-        {showDesc && opt.description && (
-          <div className="text-gray-400 dark:text-gray-500 truncate max-w-[90px] text-[10px]">{opt.description}</div>
-        )}
+      <div className="aspect-[3/4] overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 transition-colors group-hover:border-brand-400 dark:border-zinc-700 dark:bg-zinc-800">
+        <img src={getFileUrl(opt.url)} alt="" loading="lazy" className="h-full w-full object-cover object-top" />
       </div>
+      <div className="mt-1 truncate text-[11px] text-zinc-600 dark:text-zinc-300">{opt.name}</div>
     </button>
   );
 
-  const renderPicker = () => {
-    const groupKeys = Object.keys(charGroups).filter((k) => k !== "__none__");
-    const ungrouped = charGroups["__none__"] || [];
+  const groupKeys = Object.keys(charGroups).filter((k) => k !== "__none__");
+  const ungrouped = charGroups["__none__"] || [];
 
-    return (
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-2 mt-2 max-h-56 overflow-y-auto">
-        {groupKeys.map((faceFile) => {
-          const faceOpt = faceByFilename[faceFile];
-          const chars = charGroups[faceFile];
-          return (
-            <div key={faceFile} className="mb-2">
-              <div className="flex items-center gap-1.5 mb-1">
-                {faceOpt && (
-                  <img src={getFileUrl(faceOpt.url)} alt={faceOpt.name} className="w-5 h-5 rounded-full object-cover" />
-                )}
-                <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium">
-                  {faceOpt?.name || faceFile}
-                  <span className="text-gray-400 dark:text-gray-500 ml-1">({t("char.variants", { count: chars.length })})</span>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-1.5 ml-6">
-                {chars.map((opt) => renderOptionButton(opt))}
-              </div>
-            </div>
-          );
-        })}
+  return card(
+    <>
+      {header(t("char.instruction"), t("char.instructionHint"))}
 
-        {ungrouped.length > 0 && (
-          <div className="mb-2">
-            <div className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">{t("char.characters")}</div>
-            <div className="flex flex-wrap gap-1.5">
-              {ungrouped.map((opt) => renderOptionButton(opt))}
-            </div>
-          </div>
-        )}
-
-        {availableFaces.length > 0 && (
-          <div>
-            <div className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">{t("char.faces")}</div>
-            <div className="flex flex-wrap gap-1.5">
-              {availableFaces.map((opt) => renderOptionButton(opt, false))}
-            </div>
-          </div>
-        )}
-
-        {available.length === 0 && (
-          <div className="text-xs text-gray-400 dark:text-gray-500 text-center py-2">{t("char.noMore")}</div>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-xl p-3 my-2">
-      <div className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-2">
-        {t("char.instruction")}
-      </div>
-
-      <div className="flex flex-wrap gap-2 mb-2">
+      <div className="flex flex-wrap gap-2.5">
         {slots.map((opt, i) => (
-          <div key={`${opt.path}-${i}`} className="relative group">
+          <div key={`${opt.path}-${i}`} className="group relative w-[84px]">
             <button
               onClick={() => setPickingSlot(pickingSlot === i ? null : i)}
-              className={`flex items-center gap-1.5 rounded-lg px-2 py-1.5 border shadow-sm transition-colors ${
-                pickingSlot === i
-                  ? "bg-blue-100 dark:bg-blue-900/40 border-blue-400 ring-1 ring-blue-400"
-                  : "bg-white dark:bg-gray-800 border-blue-300 dark:border-blue-600 hover:border-blue-400"
+              onDoubleClick={() => openLightbox([{ url: getFileUrl(opt.url), name: displayName(opt) }])}
+              className={`block w-full overflow-hidden rounded-lg border-2 bg-zinc-50 transition-colors dark:bg-zinc-800 ${
+                pickingSlot === i ? "border-brand-500" : "border-transparent ring-1 ring-zinc-200 hover:ring-brand-300 dark:ring-zinc-700"
               }`}
             >
-              <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
-              <div className="text-xs min-w-0 text-left">
-                <div className="font-medium text-gray-700 dark:text-gray-200 truncate max-w-[100px]">
-                  {opt.label || opt.name}
-                </div>
-                <div className="text-gray-400 dark:text-gray-500 truncate max-w-[100px]">
-                  {opt.category === "characters" ? t("char.categoryChar") : t("char.categoryFace")}
-                </div>
-              </div>
+              <img src={getFileUrl(opt.url)} alt="" className="aspect-[3/4] w-full object-cover object-top" />
             </button>
+            <div className="mt-1 truncate text-center text-[11px] font-medium text-zinc-700 dark:text-zinc-200" title={displayName(opt)}>
+              {displayName(opt)}
+            </div>
+            <div className="truncate text-center text-[10px] text-zinc-400">
+              {opt.category === "characters" ? t("char.categoryChar") : t("char.categoryFace")}
+            </div>
             <button
-              onClick={(e) => { e.stopPropagation(); removeSlot(i); }}
-              className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-gray-400 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+              onClick={() => removeSlot(i)}
+              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-zinc-700 text-white opacity-0 shadow transition-opacity hover:bg-red-500 group-hover:opacity-100"
             >
-              ×
+              <Icon name="x" className="h-3 w-3" strokeWidth={3} />
             </button>
           </div>
         ))}
@@ -201,27 +143,58 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
         {available.length > 0 && (
           <button
             onClick={() => setPickingSlot(pickingSlot === slots.length ? null : slots.length)}
-            className={`flex items-center gap-1 rounded-lg px-3 py-1.5 border border-dashed transition-colors ${
+            className={`flex aspect-[3/4] w-[84px] flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed text-xs transition-colors ${
               pickingSlot === slots.length
-                ? "border-blue-400 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
-                : "border-gray-300 dark:border-gray-600 hover:border-blue-400 text-gray-400 dark:text-gray-500 hover:text-blue-500"
+                ? "border-brand-400 bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-300"
+                : "border-zinc-200 text-zinc-400 hover:border-brand-300 hover:text-brand-500 dark:border-zinc-700"
             }`}
           >
-            <span className="text-lg leading-none">+</span>
-            <span className="text-xs">{t("common.add")}</span>
+            <Icon name="plus" className="h-4 w-4" />
+            {t("common.add")}
           </button>
         )}
       </div>
 
-      {pickingSlot !== null && renderPicker()}
+      {pickingSlot !== null && (
+        <div className="mt-3 max-h-72 space-y-3 overflow-y-auto rounded-lg border border-zinc-200 bg-zinc-50/70 p-2.5 dark:border-zinc-800 dark:bg-zinc-950/40">
+          {groupKeys.map((faceFile) => {
+            const faceOpt = faceByFilename[faceFile];
+            const chars = charGroups[faceFile];
+            return (
+              <div key={faceFile}>
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  {faceOpt && <img src={getFileUrl(faceOpt.url)} alt="" className="h-5 w-5 rounded-full object-cover" />}
+                  <span className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                    {faceOpt?.name || faceFile}
+                    <span className="ml-1 text-zinc-400">· {t("char.variants", { count: chars.length })}</span>
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">{chars.map(optionButton)}</div>
+              </div>
+            );
+          })}
+          {ungrouped.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">{t("char.characters")}</div>
+              <div className="flex flex-wrap gap-2">{ungrouped.map(optionButton)}</div>
+            </div>
+          )}
+          {availableFaces.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">{t("char.faces")}</div>
+              <div className="flex flex-wrap gap-2">{availableFaces.map(optionButton)}</div>
+            </div>
+          )}
+          {available.length === 0 && <div className="py-2 text-center text-xs text-zinc-400">{t("char.noMore")}</div>}
+        </div>
+      )}
 
-      <button
-        onClick={handleConfirm}
-        disabled={slots.length === 0 || disabled}
-        className="w-full mt-2 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        {t("char.confirmSelection")} ({slots.length})
-      </button>
-    </div>
+      <div className="mt-3 flex justify-end">
+        <button onClick={() => onConfirm(slots)} disabled={slots.length === 0 || busy} className="btn-primary">
+          <Icon name="check" className="h-3.5 w-3.5" />
+          {t("char.confirmSelection", { count: slots.length })}
+        </button>
+      </div>
+    </>,
   );
 }

@@ -6,11 +6,11 @@
 import logging
 from pathlib import Path
 
-from google.genai.types import Part
 from pydantic import BaseModel
 
 from mcp.server.fastmcp import FastMCP
 
+from src.providers.http import image_part
 from src.tools.gemini_text import analyze_multimodal
 
 logger = logging.getLogger(__name__)
@@ -44,24 +44,15 @@ def register(mcp: FastMCP) -> None:
         if not img_path.exists():
             return {"error": f"图片不存在: {image_path}"}
 
-        from src.tools.gemini_image import _guess_mime
-
         contents: list = [
-            Part.from_bytes(
-                data=img_path.read_bytes(),
-                mime_type=_guess_mime(img_path),
-            ),
+            image_part(img_path),
             "Analyze the SCENE/LOCATION in this photo. Ignore all people.\n"
             "Describe: the environment, location type, mood/atmosphere, time of day, "
             "and list key visual elements (furniture, decorations, architecture, nature, etc.).",
         ]
 
         try:
-            result = analyze_multimodal(
-                contents=contents,
-                schema=SceneDescription,
-                model="gemini-3-flash-preview",
-            )
+            result = analyze_multimodal(contents=contents, schema=SceneDescription)
             return {
                 "description": result.description,
                 "location_type": result.location_type,

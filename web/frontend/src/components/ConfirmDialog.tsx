@@ -1,48 +1,37 @@
-import { useEffect, useRef } from "react";
-import { useLang } from "../LanguageContext";
+import { useLang } from "../hooks";
+import Icon from "./Icon";
+import Modal from "./Modal";
 
 interface Props {
+  title?: string;
   message: string;
+  confirmLabel?: string;
+  danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-export default function ConfirmDialog({ message, onConfirm, onCancel }: Props) {
+export default function ConfirmDialog({ title, message, confirmLabel, danger = true, onConfirm, onCancel }: Props) {
   const { t } = useLang();
-  const confirmRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    confirmRef.current?.focus();
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onCancel]);
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onCancel}>
-      <div
-        className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-5 max-w-sm w-full mx-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <p className="text-sm text-gray-700 dark:text-gray-200 mb-4">{message}</p>
-        <div className="flex gap-2 justify-end">
-          <button
-            onClick={onCancel}
-            className="px-4 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            ref={confirmRef}
-            onClick={onConfirm}
-            className="px-4 py-1.5 text-xs font-medium text-white bg-red-500 rounded-lg hover:bg-red-600 transition-colors"
-          >
-            {t("common.confirm")}
+    <Modal onClose={onCancel} labelledBy="confirm-title">
+      <div className="p-5">
+        <div className="flex gap-3">
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${danger ? "bg-red-50 text-red-500 dark:bg-red-500/10" : "bg-brand-50 text-brand-500 dark:bg-brand-500/10"}`}>
+            <Icon name={danger ? "alert-triangle" : "info"} className="h-[18px] w-[18px]" />
+          </div>
+          <div className="min-w-0 pt-0.5">
+            {title && <h3 id="confirm-title" className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{title}</h3>}
+            <p className={`text-sm leading-relaxed text-zinc-600 dark:text-zinc-300 ${title ? "mt-1" : ""}`}>{message}</p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onCancel} className="btn-secondary px-4">{t("common.cancel")}</button>
+          <button data-autofocus onClick={onConfirm} className={`${danger ? "btn-danger" : "btn-primary"} px-4`}>
+            {confirmLabel || t("common.confirm")}
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

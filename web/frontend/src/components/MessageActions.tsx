@@ -1,46 +1,49 @@
-import { useLang } from "../LanguageContext";
+import { useState } from "react";
+import { useLang } from "../hooks";
+import Icon from "./Icon";
 
 interface Props {
-  role: "user" | "assistant";
-  onCopy: () => void;
+  align?: "start" | "end";
+  onCopy?: () => void;
   onEdit?: () => void;
-  onRetry: () => void;
-  onDelete: () => void;
+  onRetry?: () => void;
+  onDelete?: () => void;
+  disabled?: boolean;
 }
 
-export default function MessageActions({ role, onCopy, onEdit, onRetry, onDelete }: Props) {
+/** 消息下方的操作按钮（悬停时出现）。 */
+export default function MessageActions({ align = "start", onCopy, onEdit, onRetry, onDelete, disabled }: Props) {
   const { t } = useLang();
-  const btnClass =
-    "p-1 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors";
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    onCopy?.();
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
 
   return (
-    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity mt-1">
-      <button onClick={onCopy} className={btnClass} title={t("common.copy")}>
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-        </svg>
-      </button>
-      {role === "user" && onEdit && (
-        <button onClick={onEdit} className={btnClass} title={t("common.edit")}>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-          </svg>
+    <div className={`mt-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 ${align === "end" ? "justify-end" : ""}`}>
+      {onCopy && (
+        <button onClick={copy} className="icon-btn-sm" title={copied ? t("common.copied") : t("common.copy")}>
+          <Icon name={copied ? "check" : "copy"} className={`h-3.5 w-3.5 ${copied ? "text-emerald-500" : ""}`} />
         </button>
       )}
-      <button onClick={onRetry} className={btnClass} title={t("common.retry")}>
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="1 4 1 10 7 10" />
-          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-        </svg>
-      </button>
-      <button onClick={onDelete} className={btnClass} title={t("common.delete")}>
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-        </svg>
-      </button>
+      {onEdit && (
+        <button onClick={onEdit} disabled={disabled} className="icon-btn-sm" title={t("common.edit")}>
+          <Icon name="pencil" className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {onRetry && (
+        <button onClick={onRetry} disabled={disabled} className="icon-btn-sm" title={t("common.retry")}>
+          <Icon name="retry" className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {onDelete && (
+        <button onClick={onDelete} disabled={disabled} className="icon-btn-sm hover:text-red-500 dark:hover:text-red-400" title={t("common.delete")}>
+          <Icon name="trash" className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   );
 }

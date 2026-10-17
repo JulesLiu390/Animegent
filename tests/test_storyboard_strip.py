@@ -1,6 +1,7 @@
 """测试：用 generate_comic_strip 的方式生成分镜条，然后切割成 16:9 帧。
 
 生成一个 4 格无台词分镜条（纯画面，无气泡无边框），然后均分裁成 4 张 16:9 帧。
+使用「设置」中配置的图片生成模型。
 
 运行: uv run python tests/test_storyboard_strip.py
 """
@@ -8,9 +9,8 @@
 from pathlib import Path
 
 from PIL import Image
-from google.genai.types import GenerateContentConfig, Part
 
-from src.tools.models.registry import get_genai_client
+from src.providers import image as image_provider
 
 PROJECT = Path("projects/jojo test")
 CHARACTERS = [
@@ -20,19 +20,9 @@ CHARACTERS = [
 OUTPUT_DIR = Path("tests/test_storyboard_strip_output")
 
 
-def _guess_mime(p: Path) -> str:
-    return {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
-        p.suffix.lower(), "application/octet-stream"
-    )
-
-
 def generate_storyboard_strip() -> Path:
     """生成 4 格无台词分镜条。"""
-    contents: list = []
-    labels = []
-    for i, cp in enumerate(CHARACTERS):
-        contents.append(Part.from_bytes(data=cp.read_bytes(), mime_type=_guess_mime(cp)))
-        labels.append(f"Image {i + 1}: Character reference")
+    labels = [f"Image {i + 1}: Character reference" for i in range(len(CHARACTERS))]
 
     prompt = (
         f"{chr(10).join(labels)}\n\n"
@@ -53,28 +43,9 @@ def generate_storyboard_strip() -> Path:
         "6. Anime/animation art style, cinematic, high quality.\n"
         "7. This is a storyboard/keyframe sheet — focus on clear staging, lighting, and composition.\n"
     )
-    contents.append(prompt)
 
-    client = get_genai_client()
-    resp = client.models.generate_content(
-        model="gemini-3.1-flash-image-preview",
-        contents=contents,
-        config=GenerateContentConfig(response_modalities=["IMAGE", "TEXT"]),
-    )
-
-    image_bytes = None
-    if resp.candidates:
-        for part in resp.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                image_bytes = part.inline_data.data
-
-    if not image_bytes:
-        raise RuntimeError("Gemini 未返回图片")
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    strip_path = OUTPUT_DIR / "storyboard_strip.png"
-    strip_path.write_bytes(image_bytes)
-    return strip_path
+    result = image_provider.generate(prompt, CHARACTERS, aspect_ratio="9:16")
+    return image_provider.save(result, OUTPUT_DIR / "storyboard_strip.png")
 
 
 def split_to_frames(strip_path: Path, num_panels: int = 4) -> list[Path]:
@@ -108,29 +79,12 @@ def refine_frame(
     output_path: Path,
 ) -> Path:
     """放大分镜帧分辨率，只传原图 + 放大指令，不传任何额外素材。"""
-    contents: list = [
-        Part.from_bytes(data=frame_path.read_bytes(), mime_type=_guess_mime(frame_path)),
+    result = image_provider.generate(
         "Upscale this image to higher resolution. Keep everything exactly the same. Do not add, remove, or change anything.",
-    ]
-
-    client = get_genai_client()
-    resp = client.models.generate_content(
-        model="gemini-3.1-flash-image-preview",
-        contents=contents,
-        config=GenerateContentConfig(response_modalities=["IMAGE", "TEXT"]),
+        [frame_path],
+        aspect_ratio="16:9",
     )
-
-    image_bytes = None
-    if resp.candidates:
-        for part in resp.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                image_bytes = part.inline_data.data
-
-    if not image_bytes:
-        raise RuntimeError("Gemini 未返回图片")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(image_bytes)
+    image_provider.save(result, output_path)
 
     # 裁到精确 16:9
     img = Image.open(output_path)

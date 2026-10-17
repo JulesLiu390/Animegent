@@ -1,1176 +1,844 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import type { AttachedImage, CharacterOption, ChatMessage, Conversation, ImageVerdict, PlanStep, ToolCallInfo } from "../api";
-import { deleteAsset, deleteConversation, fetchConversations, fetchUIMessages, getFileUrl, saveUIMessages, streamMessage, uploadImage } from "../api";
-import ToolCallCard from "./ToolCallCard";
-import MessageActions from "./MessageActions";
-import CharacterSelectCard from "./CharacterSelectCard";
-import FaceSelectCard from "./FaceSelectCard";
-import TaskPlanCard from "./TaskPlanCard";
+import { Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type DragEvent, type Ref } from "react";
+import type {
+  AppSettings, Asset, AttachedImage, Conversation, CreationMode, InteractionMode, RunOptions, Step, StepResponse, Turn, TurnStreamCallbacks,
+} from "../api";
+import {
+  cancelJob, deleteAsset, deleteConversation, deleteTurn, fetchConversations, fetchJobs, fetchTurns, getFileUrl, isRoleConfigured,
+  isStoryboardEnabled, renameConversation, resumeTurn, retryTurn, sendMessage, setStepVerdict, stopChat, uploadImage,
+} from "../api";
+import { useLang, useLightbox, useNow, useToast } from "../hooks";
+import { DRAG_ASSET_TYPE } from "../lib/assets";
+import { isNetworkError } from "../lib/errors";
+import { formatDuration } from "../lib/format";
+import { fileName } from "../lib/media";
+import { readStorage, writeStorage } from "../lib/storage";
+import { GENERATION_TOOLS, toolLabel, toolStatus } from "../lib/tools";
+import {
+  appendDelta, applyJob, assetToAttachment, draftTurn, isImageAttachment, isJobActive, isPendingStep, isWaiting, markStopped, newId,
+  outputPath, patchStep, patchTurn, stepDomId, stepMedia, upsertStep, upsertTurn,
+} from "../lib/turns";
+import ApprovalDock from "./ApprovalDock";
+import ChatEmptyState from "./ChatEmptyState";
+import { AssistantTurn, UserTurn, type StepHandlers } from "./ChatTurns";
+import Composer from "./Composer";
+import ConfirmDialog from "./ConfirmDialog";
 import ConversationHistory from "./ConversationHistory";
-import ModeSelector from "./ModeSelector";
-import InteractionModeSelector from "./InteractionModeSelector";
-import type { InteractionMode } from "./InteractionModeSelector";
-import type { FaceInfo } from "./FaceSelectCard";
-import { useLang } from "../LanguageContext";
-import MarkdownText from "./MarkdownText";
+import Icon, { Spinner } from "./Icon";
+import type { SettingsTab } from "./SettingsModal";
+
+export interface ChatPanelHandle {
+  addAttachments: (items: AttachedImage[]) => void;
+}
 
 interface Props {
+  ref?: Ref<ChatPanelHandle>;
   project: string;
-  onNewImages?: () => void;
-  pendingAssets?: AttachedImage[];
-  onClearPendingAssets?: () => void;
-  onPendingAssetClick?: (path: string) => void;
+  /** 打开时恢复的对话（上次打开的那个） */
+  initialConversationId?: string | null;
+  onConversationChange?: (id: string | null) => void;
+  onAssetsChanged: () => void;
+  /** 在预览面板打开项目里的某个文件；不在素材库里时返回 false */
+  onPreviewPath: (path: string) => boolean;
+  /** 模型回复里的链接：指向素材时在预览面板打开 */
+  onOpenLink: (url: string) => boolean;
+  settings: AppSettings | null;
+  onSettingsChange: (settings: AppSettings) => void;
+  onOpenSettings: (tab?: SettingsTab) => void;
+  onBusyChange: (busy: boolean) => void;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
 }
 
-let turnCounter = 0;
-function newTurnId(): string {
-  return `turn-${++turnCounter}-${Date.now()}`;
+const MODE_KEY = "animegent-mode";
+const INTERACTION_KEY = "animegent-interaction";
+
+/** 记住的交互模式；旧版的「单步 / 计划」都按「生成前确认」。 */
+function savedInteraction(): InteractionMode {
+  const saved = readStorage(INTERACTION_KEY);
+  return saved === "ask" || saved === "auto" ? saved : "confirm";
 }
 
-export default function ChatPanel({ project, onNewImages, pendingAssets, onClearPendingAssets, onPendingAssetClick }: Props) {
+type PendingAction = { kind: "switch"; run: () => void } | { kind: "delete"; turnId: string };
+type StreamSession = { abort: AbortController; turnId: string; stopTimer?: number };
+
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+export default function ChatPanel({
+  ref, project, initialConversationId, onConversationChange, onAssetsChanged, onPreviewPath, onOpenLink, settings, onSettingsChange, onOpenSettings, onBusyChange,
+  sidebarOpen, onToggleSidebar,
+}: Props) {
   const { lang, t } = useLang();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const toast = useToast();
+  const openLightbox = useLightbox();
+
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const turnsRef = useRef<Turn[]>([]);
+  useEffect(() => { turnsRef.current = turns; }, [turns]);
+
+  const [conversationId, setConversationIdState] = useState<string | null>(null);
+  const conversationIdRef = useRef<string | null>(null);
+  const onConversationChangeRef = useRef(onConversationChange);
+  useEffect(() => { onConversationChangeRef.current = onConversationChange; });
+  const setConversationId = useCallback((id: string | null) => {
+    conversationIdRef.current = id;
+    setConversationIdState(id);
+    onConversationChangeRef.current?.(id);
+  }, []);
+  const [restoring, setRestoring] = useState(Boolean(initialConversationId));
+  const initialConversationRef = useRef(initialConversationId);
+  const [title, setTitle] = useState("");
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  const streamRef = useRef<StreamSession | null>(null);
+  const [streamingTurnId, setStreamingTurnId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const loading = streamingTurnId !== null;
+
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const [attachments, setAttachments] = useState<AttachedImage[]>([]);
   const [uploading, setUploading] = useState(false);
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
-  const [editText, setEditText] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  // Plan tracking — state driven by backend SSE events
-  const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
-  const [planPaused, setPlanPaused] = useState(false);
-  const [planTurnId, setPlanTurnId] = useState<string | null>(null);
-  // Conversation history
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [conversationTitle, setConversationTitle] = useState("");
-  const [mode, setMode] = useState<"comic" | "storyboard">("comic");
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>("ask");
-  const [videoMode, setVideoMode] = useState<"grok" | "veo">("grok");
-  const [activeTool, setActiveTool] = useState<string | null>(null);
-  const conversationIdRef = useRef<string | null>(null);
-  useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
+  const [focusKey, setFocusKey] = useState(0);
+
+  const [mode, setModeState] = useState<CreationMode>(() => (readStorage(MODE_KEY) === "storyboard" ? "storyboard" : "comic"));
+  const [interactionMode, setInteractionState] = useState<InteractionMode>(savedInteraction);
+  const modeRef = useRef(mode);
+  const interactionRef = useRef(interactionMode);
+  const setMode = useCallback((value: CreationMode) => {
+    modeRef.current = value;
+    setModeState(value);
+    writeStorage(MODE_KEY, value);
+  }, []);
+  const setInteractionMode = useCallback((value: InteractionMode) => {
+    interactionRef.current = value;
+    setInteractionState(value);
+    writeStorage(INTERACTION_KEY, value);
+  }, []);
+  // 分镜模式休眠时一律按条漫模式（浏览器里记住的选择不动，重新开放后恢复）
+  const storyboard = isStoryboardEnabled(settings);
+  const activeMode: CreationMode = storyboard ? mode : "comic";
+  const storyboardRef = useRef(storyboard);
+  useEffect(() => { storyboardRef.current = storyboard; }, [storyboard]);
+  const runOptions = useCallback((): RunOptions => ({
+    lang,
+    mode: storyboardRef.current ? modeRef.current : "comic",
+    interactionMode: interactionRef.current,
+  }), [lang]);
+
+  useEffect(() => { onBusyChange(loading); }, [loading, onBusyChange]);
+
+  // ---------- 对话列表 ----------
 
   const loadConversations = useCallback(() => {
     fetchConversations(project).then(setConversations).catch(() => {});
   }, [project]);
 
-  // Reset chat when project changes
+  // 打开项目时加载对话列表，并恢复上次打开的对话
   useEffect(() => {
-    setMessages([]);
-    setConversationId(null);
-    setConversationTitle("");
-    setInput("");
-    setAttachedImages([]);
-    setEditingTurnId(null);
-    setPlanSteps([]);
-    setPlanPaused(false);
-    setPlanTurnId(null);
-    loadConversations();
-  }, [project, loadConversations]);
+    let cancelled = false;
+    fetchConversations(project)
+      .then((list) => {
+        if (cancelled) return;
+        setConversations(list);
+        const initial = initialConversationRef.current;
+        initialConversationRef.current = null;
+        const conv = initial ? list.find((c) => c.id === initial) : undefined;
+        if (conv) return implRef.current.loadConversation(conv);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setRestoring(false); });
+    return () => { cancelled = true; };
+  }, [project]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  // Receive assets from sidebar
-  useEffect(() => {
-    if (pendingAssets && pendingAssets.length > 0) {
-      setAttachedImages((prev) => {
-        const existing = new Set(prev.map((i) => i.path));
-        const newOnes = pendingAssets.filter((a) => !existing.has(a.path));
-        return [...prev, ...newOnes];
+  /** 按后端的数据刷新当前对话（流异常结束后对齐状态）；后端没收到的那一轮保留本地的出错提示。 */
+  const refresh = useCallback(async () => {
+    const cid = conversationIdRef.current;
+    if (!cid) return;
+    try {
+      const fresh = await fetchTurns(cid);
+      if (conversationIdRef.current !== cid || streamRef.current) return;
+      setTurns((prev) => {
+        const known = new Set(fresh.map((turn) => turn.id));
+        const merged = fresh.reduce((acc, turn) => upsertTurn(acc, turn), prev.filter((turn) => known.has(turn.id)));
+        return [...merged, ...prev.filter((turn) => !known.has(turn.id) && turn.status === "failed")];
       });
-      onClearPendingAssets?.();
-    }
-  }, [pendingAssets, onClearPendingAssets]);
+    } catch { /* 后端连不上时保留界面现状 */ }
+  }, []);
 
-  const addImageFiles = async (files: File[]) => {
-    if (files.length === 0) return;
+  // ---------- 滚动 ----------
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  const lastScrollTop = useRef(0);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // 只有用户往上滚才取消「跟随到底部」；平滑滚动过程中的中间位置不算
+    if (el.scrollTop < lastScrollTop.current - 4 && distance > 80) stickRef.current = false;
+    else if (distance < 80) stickRef.current = true;
+    lastScrollTop.current = el.scrollTop;
+    setShowJump(distance > 320);
+  };
+
+  const scrollToBottom = useCallback((smooth = true) => {
+    stickRef.current = true;
+    requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    });
+  }, []);
+
+  const hasTurns = turns.length > 0;
+  // 内容变高（流式输出、图片加载完）时，如果本来就在底部就保持在底部
+  useEffect(() => {
+    const content = contentRef.current;
+    const el = scrollRef.current;
+    if (!content || !el) return;
+    const observer = new ResizeObserver(() => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [hasTurns]);
+
+  // ---------- 流式请求 ----------
+
+  /**
+   * 执行一个流式请求，按后端推送的事件更新这一轮。
+   * existing：这一轮在后端已经存在（继续执行 / 回应等待中的 step），出错时以后端的状态为准。
+   */
+  const runStream = useCallback(async (
+    turnId: string,
+    start: (callbacks: TurnStreamCallbacks, signal: AbortSignal) => Promise<void>,
+    { existing = false, title: newTitle }: { existing?: boolean; title?: string } = {},
+  ) => {
+    const abort = new AbortController();
+    const session: StreamSession = { abort, turnId };
+    streamRef.current = session;
+    setStreamingTurnId(turnId);
+    setStopping(false);
+    const alive = () => streamRef.current === session;
+    let acknowledged = existing;
+    let finished = false;
+
+    const finish = (error?: { message: string; kind?: string }) => {
+      if (finished) return;
+      finished = true;
+      if (!alive()) return; // 已经切换到别的对话
+      window.clearTimeout(session.stopTimer);
+      if (error && !acknowledged) {
+        setTurns((prev) => patchTurn(prev, turnId, (turn) => ({ ...turn, status: "failed", error: error.message, error_kind: error.kind ?? "generic" })));
+      } else if (error && error.message !== "connection-lost") {
+        toast(error.message, "error");
+      }
+      // 停止或断线时可能没收到最后的状态：先把还在转圈的标成已停止，再按后端刷新
+      setTurns((prev) => patchTurn(prev, turnId, (turn) => (turn.status === "running" ? markStopped(turn) : turn)));
+      streamRef.current = null;
+      setStreamingTurnId(null);
+      setStopping(false);
+      loadConversations();
+      onAssetsChanged();
+      if (error && acknowledged) refresh();
+    };
+
+    const callbacks: TurnStreamCallbacks = {
+      onConversation: (cid) => {
+        if (!alive() || conversationIdRef.current === cid) return;
+        setConversationId(cid);
+        if (newTitle) setTitle((prev) => prev || newTitle.slice(0, 60));
+      },
+      onTurn: (turn) => {
+        if (!alive()) return;
+        if (turn.id === turnId) acknowledged = true;
+        setTurns((prev) => upsertTurn(prev, turn));
+      },
+      onStep: (step) => {
+        if (!alive()) return;
+        setTurns((prev) => upsertStep(prev, step));
+        if (step.kind === "tool" && step.status === "completed") onAssetsChanged();
+      },
+      onDelta: (stepId, text) => {
+        if (alive()) setTurns((prev) => appendDelta(prev, stepId, text));
+      },
+      onJob: (job) => {
+        if (!alive()) return;
+        setTurns((prev) => applyJob(prev, job));
+        if (!isJobActive(job)) onAssetsChanged();
+      },
+      onDone: () => finish(),
+      onError: (message, kind) => finish({ message, kind }),
+    };
+
+    try {
+      await start(callbacks, abort.signal);
+    } catch (err) {
+      if (abort.signal.aborted) finish();
+      else finish({ message: isNetworkError(err) ? t("app.backendDown") : errorMessage(err), kind: "network" });
+    }
+    finish();
+  }, [loadConversations, onAssetsChanged, refresh, setConversationId, t, toast]);
+
+  const stop = useCallback(() => {
+    const session = streamRef.current;
+    if (!session) return;
+    setStopping(true);
+    const cid = conversationIdRef.current;
+    if (cid) stopChat(cid);
+    // 后端一般很快收尾并推送最后的状态；连接卡住时直接断开（断开也会让后端停止）
+    session.stopTimer = window.setTimeout(() => session.abort.abort(), 4000);
+  }, []);
+
+  /** 离开当前对话（切换对话 / 新对话 / 切换项目）：停止还在跑的任务。 */
+  const leaveCurrent = useCallback(() => {
+    const session = streamRef.current;
+    if (!session) return;
+    streamRef.current = null;
+    setStreamingTurnId(null);
+    setStopping(false);
+    window.clearTimeout(session.stopTimer);
+    const cid = conversationIdRef.current;
+    if (cid) stopChat(cid);
+    session.abort.abort();
+  }, []);
+
+  useEffect(() => () => leaveCurrent(), [leaveCurrent]);
+
+  // ---------- 发送 ----------
+
+  const send = useCallback(async ({ text, display, attachments: atts = [] }: { text: string; display?: string; attachments?: AttachedImage[] }) => {
+    if (streamRef.current) return;
+    const turnId = newId();
+    const last = turnsRef.current[turnsRef.current.length - 1];
+    setTurns((prev) => [...prev, draftTurn(turnId, conversationIdRef.current, (last?.seq ?? -1) + 1, { text, display, attachments: atts })]);
+    scrollToBottom();
+    const shown = (display ?? text).trim();
+    await runStream(turnId, (callbacks, signal) => sendMessage({
+      ...runOptions(),
+      conversationId: conversationIdRef.current,
+      project,
+      turnId,
+      text,
+      display,
+      attachments: atts,
+      title: shown || undefined,
+    }, callbacks, signal), { title: shown || undefined });
+  }, [project, runOptions, runStream, scrollToBottom]);
+
+  const handleSend = () => {
+    const text = input.trim();
+    if ((!text && attachments.length === 0) || streamRef.current || uploading) return;
+    const atts = attachments;
+    setInput("");
+    setAttachments([]);
+    send({ text, attachments: atts });
+  };
+
+  /** 回应等待中的 step（批准 / 拒绝生成、卡片里的选择）：这一轮接着执行。 */
+  const respond = useCallback(async (turnId: string, responses: Record<string, StepResponse>) => {
+    if (streamRef.current) return;
+    setTurns((prev) => patchTurn(prev, turnId, (turn) => ({ ...turn, status: "running" })));
+    await runStream(turnId, (callbacks, signal) => resumeTurn(turnId, responses, runOptions(), callbacks, signal), { existing: true });
+  }, [runOptions, runStream]);
+
+  const respondAll = useCallback((turn: Turn, response: StepResponse) => {
+    const pending = turn.steps.filter((s) => s.status === "pending_approval");
+    respond(turn.id, Object.fromEntries(pending.map((s) => [s.id, response])));
+  }, [respond]);
+
+  // ---------- 附件 ----------
+
+  const addAttachments = useCallback((items: AttachedImage[]) => {
+    setAttachments((prev) => {
+      const existing = new Set(prev.map((a) => a.path));
+      return [...prev, ...items.filter((a) => !existing.has(a.path))];
+    });
+    setFocusKey((k) => k + 1);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ addAttachments }), [addAttachments]);
+
+  const uploadFiles = useCallback(async (files: File[]) => {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    if (images.length === 0) return;
     setUploading(true);
     try {
-      for (const file of files) {
+      for (const file of images) {
         const previewUrl = URL.createObjectURL(file);
-        const result = await uploadImage(file, project);
-        setAttachedImages((prev) => [
-          ...prev,
-          { path: result.path, url: result.url, name: result.name, previewUrl },
-        ]);
+        try {
+          const res = await uploadImage(file, project);
+          setAttachments((prev) => [...prev, { path: res.path, url: res.url, name: res.name, previewUrl }]);
+        } catch (err) {
+          URL.revokeObjectURL(previewUrl);
+          toast(t("chat.uploadFailed", { error: errorMessage(err) }), "error");
+        }
       }
-      onNewImages?.();
-    } catch (err) {
-      console.error("Upload failed:", err);
+      onAssetsChanged();
     } finally {
       setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
-  };
+  }, [onAssetsChanged, project, t, toast]);
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    await addImageFiles(Array.from(files));
-  };
-
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items;
-    const imageFiles: File[] = [];
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith("image/")) {
-        const file = item.getAsFile();
-        if (file) imageFiles.push(file);
-      }
-    }
-    if (imageFiles.length > 0) {
-      e.preventDefault();
-      await addImageFiles(imageFiles);
-    }
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const files = Array.from(e.dataTransfer.files).filter((f) =>
-      f.type.startsWith("image/")
-    );
-    if (files.length > 0) {
-      await addImageFiles(files);
-    }
-  };
-
-  const [dragOver, setDragOver] = useState(false);
-
-  const removeAttached = (index: number) => {
-    setAttachedImages((prev) => {
-      const img = prev[index];
-      if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => {
+      const att = prev[index];
+      if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl);
       return prev.filter((_, i) => i !== index);
     });
   };
 
-  // Helper to update the last assistant message
-  const updateLastAssistant = useCallback((updater: (msg: ChatMessage) => ChatMessage) => {
-    setMessages((prev) => {
-      const copy = [...prev];
-      for (let i = copy.length - 1; i >= 0; i--) {
-        if (copy[i].role === "assistant") {
-          copy[i] = updater(copy[i]);
-          return copy;
-        }
-      }
-      return prev;
-    });
-  }, []);
+  const openAttachment = useCallback((att: AttachedImage, all?: AttachedImage[]) => {
+    if (onPreviewPath(att.path)) return;
+    const images = (all || [att]).filter(isImageAttachment);
+    const index = Math.max(0, images.indexOf(att));
+    openLightbox(images.map((a) => ({ url: a.previewUrl || getFileUrl(a.url), name: a.name })), index);
+  }, [onPreviewPath, openLightbox]);
 
-  // Build a context summary from prior messages (for retry/edit with fresh Agent)
-  const buildContext = useCallback((priorMessages: ChatMessage[]): string => {
-    if (priorMessages.length === 0) return "";
-    const lines: string[] = [];
-    let lastTurnId = "";
-    for (const msg of priorMessages) {
-      if (msg.turnId === lastTurnId) continue; // one line per turn
-      lastTurnId = msg.turnId;
-      if (msg.role === "user") {
-        const turnMsgs = priorMessages.filter((m) => m.turnId === msg.turnId);
-        const text = turnMsgs.map((m) => m.content).filter(Boolean).join(" ");
-        const imgs = turnMsgs.flatMap((m) => m.attachedImages || []);
-        const imgNote = imgs.length > 0 ? `[${imgs.length}张图片] ` : "";
-        if (text || imgNote) lines.push(`用户: ${imgNote}${text}`);
-      } else {
-        const turnMsgs = priorMessages.filter((m) => m.turnId === msg.turnId);
-        const text = turnMsgs.map((m) => m.content).filter(Boolean).join(" ");
-        const tools = turnMsgs.flatMap((m) => m.toolCalls || []);
-        const toolNotes = tools.map((tc) => {
-          const status = tc.result?.error ? "失败" : "完成";
-          return `[${tc.tool} ${status}]`;
-        });
-        const combined = [...toolNotes, text].filter(Boolean).join(" ");
-        if (combined) lines.push(`助手: ${combined}`);
-      }
-    }
-    if (lines.length === 0) return "";
-    return `[以下是之前的对话记录，请基于此上下文继续]\n${lines.join("\n")}\n[对话记录结束]\n\n`;
-  }, []);
-
-  // Common SSE callbacks shared by doSend, plan actions, etc.
-  const makeCallbacks = useCallback((_extraOpts?: {
-    planAction?: string;
-  }) => ({
-    onConversationId: (cid: string) => {
-      setConversationId(cid);
-      // Set title from first user message if this is a new conversation
-      if (!conversationIdRef.current) {
-        setMessages((prev) => {
-          const firstUserMsg = prev.find(m => m.role === "user" && m.content);
-          if (firstUserMsg) setConversationTitle(firstUserMsg.content.slice(0, 50));
-          return prev;
-        });
-      }
-    },
-    onTextDelta: (delta: string) => {
-      updateLastAssistant((msg) => ({
-        ...msg,
-        content: msg.content + delta,
-      }));
-    },
-    onToolStart: (_index: number, tool: string, args: Record<string, unknown>) => {
-      setActiveTool(tool);
-      const tc: ToolCallInfo = { tool, args, pending: true };
-      updateLastAssistant((msg) => ({
-        ...msg,
-        toolCalls: [...(msg.toolCalls || []), tc],
-      }));
-    },
-    onToolEnd: (_index: number, tool: string, result: Record<string, unknown>, durationMs: number, toolImages?: { path: string; url: string; tool: string }[]) => {
-      setActiveTool(null);
-      updateLastAssistant((msg) => {
-        const toolCalls = [...(msg.toolCalls || [])];
-        const tcIdx = toolCalls.findIndex(
-          (tc) => tc.tool === tool && tc.pending
-        );
-        if (tcIdx >= 0) {
-          toolCalls[tcIdx] = {
-            ...toolCalls[tcIdx],
-            result,
-            duration_ms: durationMs,
-            pending: false,
-            images: toolImages,
-          };
-        }
-        const newImages = toolImages
-          ? [...(msg.images || []), ...toolImages]
-          : msg.images;
-        return { ...msg, toolCalls, images: newImages };
-      });
-      onNewImages?.();
-    },
-    onStepStart: (stepId: number) => {
-      setPlanSteps((prev) => prev.map((s) =>
-        s.id === stepId ? { ...s, status: "active" as const } : s
-      ));
-    },
-    onStepDone: (stepId: number) => {
-      setPlanSteps((prev) => prev.map((s) =>
-        s.id === stepId ? { ...s, status: "done" as const } : s
-      ));
-    },
-    onPlanGate: () => {
-      setPlanPaused(true);
-      setLoading(false);
-    },
-    onPlanDone: () => {
-      setPlanPaused(false);
-      setPlanTurnId(null);
-    },
-    onDone: () => {
-      setLoading(false);
-      setActiveTool(null);
-      onNewImages?.();
-      // Save all UI messages to DB for conversation restore
-      const cid = conversationIdRef.current;
-      if (cid) {
-        setMessages((prev) => {
-          saveUIMessages(cid, prev).catch(() => {});
-          return prev;
-        });
-      }
-    },
-    onError: (error: string) => {
-      updateLastAssistant((msg) => ({
-        ...msg,
-        content: msg.content + `\n${t("chat.errorPrefix")}: ${error}`,
-      }));
-      setLoading(false);
-    },
-  }), [onNewImages, updateLastAssistant, t]);
-
-  // Send a message (used by handleSend, handleRetry, handleEditConfirm)
-  const doSend = useCallback(async (
-    text: string,
-    images: AttachedImage[],
-    turnId: string,
-    overrideConversationId?: string | null,
-    hiddenContext?: string,
-  ) => {
-    // Separate image vs non-image attachments
-    const imageAttachments = images.filter((i) => !i.fileType || i.fileType === "image");
-    const fileAttachments = images.filter((i) => i.fileType && i.fileType !== "image");
-    const imagePaths = imageAttachments.map((i) => i.path);
-
-    // Inject non-image file contents into the message text
-    let finalText = text;
-    if (fileAttachments.length > 0) {
-      const fileParts = fileAttachments.map((f) => {
-        const label = f.fileType === "json" ? "JSON" : "Markdown";
-        return `[附件: ${f.name} (${label})]\n${f.content || "(无内容)"}`;
-      });
-      finalText = fileParts.join("\n\n") + (text ? "\n\n" + text : "");
-    }
-
-    const cidToUse = overrideConversationId !== undefined ? overrideConversationId : conversationId;
-
-    // Create abort controller for this request
-    const abort = new AbortController();
-    abortRef.current = abort;
-
-    // Build user messages for this turn
-    const userMsgs: ChatMessage[] = [];
-    if (imageAttachments.length > 0) {
-      userMsgs.push({
-        role: "user",
-        turnId,
-        type: "image",
-        content: "",
-        attachedImages: imageAttachments,
-      });
-    }
-    if (fileAttachments.length > 0) {
-      userMsgs.push({
-        role: "user",
-        turnId,
-        type: "text",
-        content: "",
-        attachedImages: fileAttachments,
-      });
-    }
-    userMsgs.push({
-      role: "user",
-      turnId,
-      type: "text",
-      content: text || (imageAttachments.length > 0 ? t("chat.imageLabel") : ""),
-    });
-
-    const assistantMsg: ChatMessage = {
-      role: "assistant",
-      turnId: newTurnId(),
-      content: "",
-      toolCalls: [],
-      images: [],
-    };
-
-    setMessages((prev) => [...prev, ...userMsgs, assistantMsg]);
-    setLoading(true);
-
-    // API message includes hidden context (not shown in UI)
-    const apiText = hiddenContext
-      ? `${hiddenContext}${finalText || "请分析这些图片"}`
-      : (finalText || "请分析这些图片");
-
-    try {
-      await streamMessage(
-        apiText,
-        cidToUse,
-        makeCallbacks(),
-        imagePaths.length > 0 ? imagePaths : undefined,
-        project,
-        abort.signal,
-        lang,
-        { mode, interactionMode, videoMode },
-      );
-    } catch (err) {
-      if (abort.signal.aborted) {
-        setLoading(false);
-        abortRef.current = null;
-        return;
-      }
-      updateLastAssistant((msg) => ({
-        ...msg,
-        content: msg.content + `\n${t("chat.errorPrefix")}: ${err}`,
-      }));
-      setLoading(false);
-    }
-  }, [conversationId, project, onNewImages, updateLastAssistant, makeCallbacks, lang, t, mode, interactionMode]);
-
-  const handleSend = async () => {
-    const text = input.trim();
-    if ((!text && attachedImages.length === 0) || loading) return;
-
-    const currentAttached = [...attachedImages];
-    setInput("");
-    setAttachedImages([]);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-
-    const turnId = newTurnId();
-    await doSend(text, currentAttached, turnId);
+  const handleDragEnter = (e: DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).some((type) => type === "Files" || type === DRAG_ASSET_TYPE)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragOver(true);
   };
-
-  // ========== Message Actions ==========
-
-  const handleCopy = (turnId: string) => {
-    const turnMsgs = messages.filter((m) => m.turnId === turnId);
-    const text = turnMsgs.map((m) => m.content).filter(Boolean).join("\n");
-    navigator.clipboard.writeText(text);
+  const handleDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragOver(false);
   };
-
-  const handleDelete = (turnId: string) => {
-    const idx = messages.findIndex((m) => m.turnId === turnId);
-    if (idx < 0) return;
-    setMessages((prev) => prev.slice(0, idx));
-    setConversationId(null); // reset agent since context is lost
-  };
-
-  const handleRetry = async (turnId: string, role: "user" | "assistant") => {
-    if (loading) return;
-
-    let userTurnId: string;
-    if (role === "user") {
-      userTurnId = turnId;
-    } else {
-      // Find the user turn right before this assistant turn
-      const idx = messages.findIndex((m) => m.turnId === turnId);
-      if (idx < 0) return;
-      // Walk backwards to find the preceding user turn
-      let userIdx = idx - 1;
-      while (userIdx >= 0 && messages[userIdx].role !== "user") userIdx--;
-      if (userIdx < 0) return;
-      userTurnId = messages[userIdx].turnId;
-    }
-
-    // Collect the user turn's data
-    const turnMsgs = messages.filter((m) => m.turnId === userTurnId);
-    const text = turnMsgs.find((m) => m.type === "text")?.content || "";
-    const images = turnMsgs.find((m) => m.type === "image")?.attachedImages || [];
-
-    // Build context from all messages before the retry point
-    const idx = messages.findIndex((m) => m.turnId === userTurnId);
-    const priorMessages = messages.slice(0, idx);
-    const context = buildContext(priorMessages);
-
-    // Delete from this user turn onwards
-    setMessages((prev) => prev.slice(0, idx));
-    setConversationId(null);
-
-    // Re-send with context injected into API call (not shown in UI)
-    const newTurn = newTurnId();
-    await doSend(text, images, newTurn, null, context);
-  };
-
-  const handleEditStart = (turnId: string) => {
-    const textMsg = messages.find((m) => m.turnId === turnId && m.type === "text");
-    setEditingTurnId(turnId);
-    setEditText(textMsg?.content || "");
-  };
-
-  const handleEditConfirm = async () => {
-    if (!editingTurnId || loading) return;
-    const turnId = editingTurnId;
-    const newText = editText.trim();
-    if (!newText) return;
-
-    // Collect images from this turn
-    const turnMsgs = messages.filter((m) => m.turnId === turnId);
-    const images = turnMsgs.find((m) => m.type === "image")?.attachedImages || [];
-
-    // Build context from messages before this turn
-    const idx = messages.findIndex((m) => m.turnId === turnId);
-    const priorMessages = messages.slice(0, idx);
-    const context = buildContext(priorMessages);
-
-    // Delete from this turn onwards
-    setMessages((prev) => prev.slice(0, idx));
-    setConversationId(null);
-
-    setEditingTurnId(null);
-    setEditText("");
-
-    const newTurn = newTurnId();
-    await doSend(newText, images, newTurn, null, context);
-  };
-
-  const handleEditCancel = () => {
-    setEditingTurnId(null);
-    setEditText("");
-  };
-
-  const handleCharacterConfirm = async (selected: CharacterOption[]) => {
-    if (loading || selected.length === 0) return;
-    const lines = selected.map(
-      (c) => `- ${c.label || c.name}: ${c.path}`
-    );
-    const text = `已确认角色：\n${lines.join("\n")}`;
-    const turnId = newTurnId();
-    await doSend(text, [], turnId);
-  };
-
-  const handleFaceConfirm = async (selected: FaceInfo[]) => {
-    if (loading) return;
-    if (selected.length === 0) {
-      const turnId = newTurnId();
-      await doSend("用户跳过了风格化，不需要风格化任何人脸。", [], turnId);
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragOver(false);
+    const raw = e.dataTransfer.getData(DRAG_ASSET_TYPE);
+    if (raw) {
+      try {
+        addAttachments([assetToAttachment(JSON.parse(raw) as Asset)]);
+      } catch { /* ignore */ }
       return;
     }
-    const lines = selected.map(
-      (f) => `- ${f.name}: ${f.crop_path}`
-    );
-    const text = `请风格化以下人脸：\n${lines.join("\n")}`;
-    const turnId = newTurnId();
-    await doSend(text, [], turnId);
+    uploadFiles(Array.from(e.dataTransfer.files));
   };
 
-  // ========== Plan Actions (backend-driven) ==========
+  // ---------- 重试 / 编辑 / 删除 ----------
 
-  const handlePlanConfirm = async (turnId: string, steps: PlanStep[], autoExecute = true) => {
-    if (loading || !conversationId) return;
-    setPlanTurnId(turnId);
-    setPlanSteps(steps);
-    setPlanPaused(false);
-    setLoading(true);
+  /** 从这一轮重新开始：text 不传则原样重试，传了就是编辑后重新发送。 */
+  const retry = useCallback(async (turnId: string, text?: string) => {
+    if (streamRef.current) return;
+    const idx = turnsRef.current.findIndex((turn) => turn.id === turnId);
+    const old = turnsRef.current[idx];
+    if (!old || old.legacy) return;
+    const newTurnId = newId();
+    const nextInput = text === undefined ? old.input : { ...old.input, text, display: undefined };
+    setEditingTurnId(null);
+    setTurns((prev) => [...prev.slice(0, idx), draftTurn(newTurnId, old.conversation_id, old.seq, nextInput)]);
+    scrollToBottom();
+    await runStream(newTurnId, (callbacks, signal) => retryTurn(turnId, { turnId: newTurnId, text }, runOptions(), callbacks, signal));
+  }, [runOptions, runStream, scrollToBottom]);
 
-    const abort = new AbortController();
-    abortRef.current = abort;
-
-    // Add assistant message for streaming responses
-    const assistantMsg: ChatMessage = {
-      role: "assistant",
-      turnId: newTurnId(),
-      content: "",
-      toolCalls: [],
-      images: [],
-    };
-    setMessages((prev) => [...prev, assistantMsg]);
-
+  const removeTurn = useCallback(async (turnId: string) => {
     try {
-      await streamMessage(
-        "",
-        conversationId,
-        makeCallbacks(),
-        undefined,
-        project,
-        abort.signal,
-        lang,
-        { planAction: "confirm", planSteps: steps, planAuto: autoExecute, mode, interactionMode, videoMode },
-      );
-    } catch (err) {
-      if (!abort.signal.aborted) {
-        updateLastAssistant((msg) => ({
-          ...msg,
-          content: msg.content + `\n${t("chat.errorPrefix")}: ${err}`,
-        }));
-        setLoading(false);
-      }
-    }
-  };
-
-  const handlePlanRevise = async (prompt: string) => {
-    if (loading) return;
-    setPlanTurnId(null);
-    setPlanSteps([]);
-    const tid = newTurnId();
-    await doSend(`用户要求修改计划：${prompt}`, [], tid);
-  };
-
-  const handlePlanContinue = async (prompt?: string) => {
-    if (loading || !conversationId) return;
-    setPlanPaused(false);
-    setLoading(true);
-
-    const abort = new AbortController();
-    abortRef.current = abort;
-
-    const assistantMsg: ChatMessage = {
-      role: "assistant",
-      turnId: newTurnId(),
-      content: "",
-      toolCalls: [],
-      images: [],
-    };
-    setMessages((prev) => [...prev, assistantMsg]);
-
-    try {
-      await streamMessage(
-        "",
-        conversationId,
-        makeCallbacks(),
-        undefined,
-        project,
-        abort.signal,
-        lang,
-        { planAction: "continue", planPrompt: prompt, mode, interactionMode, videoMode },
-      );
-    } catch (err) {
-      if (!abort.signal.aborted) {
-        updateLastAssistant((msg) => ({
-          ...msg,
-          content: msg.content + `\n${t("chat.errorPrefix")}: ${err}`,
-        }));
-        setLoading(false);
-      }
-    }
-  };
-
-  const handlePlanCancel = async () => {
-    setPlanSteps((prev) => prev.map((s) =>
-      s.status === "pending" || s.status === "active"
-        ? { ...s, status: "skipped" as const }
-        : s
-    ));
-    setPlanPaused(false);
-    if (conversationId) {
-      // Fire-and-forget cancel to backend
-      fetch(`http://localhost:8000/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversation_id: conversationId,
-          plan_action: "cancel",
-          project,
-          lang,
-        }),
-      }).catch(() => {});
-    }
-  };
-
-  // ========== Verdict Actions ==========
-
-  const setToolVerdict = (turnId: string, toolIndex: number, verdict: ImageVerdict) => {
-    setMessages((prev) => {
-      const updated = prev.map((msg) => {
-        if (msg.turnId !== turnId || !msg.toolCalls) return msg;
-        const toolCalls = msg.toolCalls.map((tc, i) =>
-          i === toolIndex ? { ...tc, verdict } : tc
-        );
-        return { ...msg, toolCalls };
+      await deleteTurn(turnId);
+      setTurns((prev) => {
+        const idx = prev.findIndex((turn) => turn.id === turnId);
+        return idx < 0 ? prev : prev.slice(0, idx);
       });
-      const cid = conversationIdRef.current;
-      if (cid) saveUIMessages(cid, updated).catch(() => {});
-      return updated;
-    });
-  };
+      loadConversations();
+    } catch (err) {
+      toast(t("chat.rewindFailed", { error: errorMessage(err) }), "error");
+    }
+  }, [loadConversations, t, toast]);
 
-  const handleAccept = (turnId: string, toolIndex: number) => {
-    setToolVerdict(turnId, toolIndex, "accepted");
-  };
+  const requestDelete = useCallback((turnId: string) => setPendingAction({ kind: "delete", turnId }), []);
+  const startEdit = useCallback((turnId: string) => setEditingTurnId(turnId), []);
+  const cancelEdit = useCallback(() => setEditingTurnId(null), []);
 
-  const handleRejectImage = async (turnId: string, toolIndex: number) => {
-    // Find the tool call to get the output path
-    const msg = messages.find((m) => m.turnId === turnId && m.toolCalls);
-    const tc = msg?.toolCalls?.[toolIndex];
-    if (tc?.images) {
-      for (const img of tc.images) {
-        try { await deleteAsset(img.path); } catch { /* ignore */ }
+  // ---------- 生成结果：满意 / 删除 / 修改，后台任务取消 ----------
+
+  const setVerdict = useCallback((step: Step, verdict: "accepted" | "rejected" | "revised") => {
+    setTurns((prev) => patchStep(prev, step.id, (s) => ({ ...s, verdict })));
+    setStepVerdict(step.id, verdict).catch(() => {});
+  }, []);
+
+  const acceptStep = useCallback((step: Step) => setVerdict(step, "accepted"), [setVerdict]);
+
+  const discardStep = useCallback(async (step: Step) => {
+    setVerdict(step, "rejected");
+    let failed = 0;
+    for (const item of stepMedia(step)) {
+      try {
+        await deleteAsset(item.path);
+      } catch {
+        failed += 1;
       }
     }
-    setToolVerdict(turnId, toolIndex, "rejected");
-    onNewImages?.();
-    // Tell agent user rejected
-    const toolName = tc?.tool || "generate";
-    const rejectTurn = newTurnId();
-    await doSend(`用户拒绝了 ${toolName} 的生成结果，请不要再使用同样的方式。`, [], rejectTurn);
-  };
+    toast(failed ? t("common.error") : t("sidebar.deleted"), failed ? "error" : "success");
+    onAssetsChanged();
+  }, [onAssetsChanged, setVerdict, t, toast]);
 
-  const handleRevise = async (turnId: string, toolIndex: number, prompt: string) => {
-    const msg = messages.find((m) => m.turnId === turnId && m.toolCalls);
-    const tc = msg?.toolCalls?.[toolIndex];
-    const outputPath = tc?.result?.output_path as string | undefined;
-    setToolVerdict(turnId, toolIndex, "rejected");
+  const reviseStep = useCallback((step: Step, prompt: string) => {
+    setVerdict(step, "revised");
+    const output = outputPath(step);
+    const turn = turnsRef.current.find((item) => item.id === step.turn_id);
+    const kept = (turn?.steps || [])
+      .filter((other) => other.id !== step.id && GENERATION_TOOLS.has(other.tool || "") && other.verdict !== "rejected")
+      .map(outputPath)
+      .filter(Boolean);
+    let text = output ? `请修改这张图片 (${output})：${prompt}` : `请重新生成：${prompt}`;
+    text += "\n注意：只修改这一个素材，不要重新生成其他素材。";
+    if (kept.length) text += `以下素材用户已接受，不要修改：${kept.join("、")}`;
+    send({ text, display: t("chat.reviseRequest", { name: output ? fileName(output) : toolLabel(step.tool || "", t), prompt }) });
+  }, [send, setVerdict, t]);
 
-    // Build context about other tool results so agent knows what NOT to redo
-    const otherAccepted: string[] = [];
-    if (msg?.toolCalls) {
-      for (let i = 0; i < msg.toolCalls.length; i++) {
-        if (i === toolIndex) continue;
-        const other = msg.toolCalls[i];
-        const otherPath = other?.result?.output_path as string | undefined;
-        const verdict = other?.verdict;
-        if (otherPath && verdict !== "rejected") {
-          otherAccepted.push(otherPath);
+  const cancelStepJob = useCallback(async (step: Step) => {
+    if (!step.job) return;
+    try {
+      const job = await cancelJob(step.job.id);
+      setTurns((prev) => applyJob(prev, job));
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    }
+  }, [toast]);
+
+  // ---------- 后台任务进度：对话流结束后轮询 ----------
+
+  const activeJobIds = useMemo(
+    () => turns.flatMap((turn) => turn.steps).filter((s) => isJobActive(s.job)).map((s) => s.job!.id),
+    [turns],
+  );
+  const activeJobKey = activeJobIds.join(",");
+  const runningElsewhere = !loading && turns.some((turn) => turn.status === "running");
+  useEffect(() => {
+    const cid = conversationId;
+    if (loading || !cid || (!activeJobKey && !runningElsewhere)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        if (activeJobKey) {
+          const jobs = await fetchJobs(cid, activeJobKey.split(","));
+          if (conversationIdRef.current !== cid || streamRef.current) return;
+          setTurns((prev) => jobs.reduce(applyJob, prev));
+          if (jobs.some((job) => !isJobActive(job))) onAssetsChanged();
         }
-      }
-    }
+        if (runningElsewhere) refresh(); // 例如在另一个标签页里执行中
+      } catch { /* 后端暂时连不上：下次再试 */ }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeJobKey, conversationId, loading, onAssetsChanged, refresh, runningElsewhere]);
 
-    // Send revise request with clear instruction to only modify this one
-    let reviseText = outputPath
-      ? `请修改这张图片 (${outputPath})：${prompt}`
-      : `请重新生成：${prompt}`;
-    reviseText += "\n注意：只修改这一个素材，不要重新生成其他素材。";
-    if (otherAccepted.length > 0) {
-      reviseText += `以下素材用户已接受，不要修改：${otherAccepted.join("、")}`;
-    }
-    const reviseTurn = newTurnId();
-    await doSend(reviseText, [], reviseTurn);
-  };
+  // ---------- 对话切换 ----------
 
-  const handleStop = () => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-      setLoading(false);
-      onNewImages?.();
-      // Mark any still-pending tool calls as completed (remove spinner)
-      updateLastAssistant((msg) => {
-        if (!msg.toolCalls?.some((tc) => tc.pending)) return msg;
-        return {
-          ...msg,
-          toolCalls: msg.toolCalls.map((tc) =>
-            tc.pending ? { ...tc, pending: false, result: { error: "stopped" } } : tc
-          ),
-        };
-      });
-    }
-  };
-
-  // ========== Conversation History Actions ==========
-
-  const handleRestoreConversation = async (conv: Conversation) => {
-    try {
-      const msgs = await fetchUIMessages(conv.id);
-      setMessages(msgs);
-      setConversationId(conv.id);
-      setConversationTitle(conv.title || "");
-      setPlanSteps([]);
-      setPlanPaused(false);
-    } catch (err) {
-      console.error("Failed to restore conversation:", err);
-    }
-  };
-
-  const handleNewChat = () => {
-    setMessages([]);
+  const resetChat = useCallback(() => {
+    turnsRef.current = [];
+    setTurns([]);
     setConversationId(null);
-    setConversationTitle("");
-    setPlanSteps([]);
-    setPlanPaused(false);
-    setPlanTurnId(null);
+    setTitle("");
+    setEditingTurnId(null);
+  }, [setConversationId]);
+
+  const guard = (action: () => void) => {
+    if (streamRef.current) setPendingAction({ kind: "switch", run: action });
+    else action();
   };
 
-  const handleDeleteConversation = async (id: string) => {
+  const loadConversation = async (conv: Conversation) => {
     try {
-      await deleteConversation(id);
-      setConversations((prev) => prev.filter((c) => c.id !== id));
-      if (conversationId === id) handleNewChat();
+      const list = await fetchTurns(conv.id);
+      turnsRef.current = list;
+      setTurns(list);
+      setConversationId(conv.id);
+      setTitle(conv.title || "");
+      setEditingTurnId(null);
+      scrollToBottom(false);
     } catch (err) {
-      console.error("Failed to delete conversation:", err);
+      toast(errorMessage(err), "error");
     }
   };
 
-  const composingRef = useRef(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const restoreConversation = (conv: Conversation) => guard(() => {
+    leaveCurrent();
+    loadConversation(conv);
+  });
 
-  const autoResize = () => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  const newChat = () => guard(() => {
+    leaveCurrent();
+    resetChat();
+    setFocusKey((k) => k + 1);
+  });
+
+  const removeConversation = async (id: string) => {
+    const run = async () => {
+      if (id === conversationIdRef.current) {
+        leaveCurrent();
+        resetChat();
+      }
+      try {
+        await deleteConversation(id);
+      } catch (err) {
+        toast(errorMessage(err), "error");
+      }
+      loadConversations();
+    };
+    if (id === conversationIdRef.current) guard(run);
+    else run();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (composingRef.current) return; // IME 输入中，忽略 Enter
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const renameConv = async (id: string, value: string) => {
+    try {
+      await renameConversation(id, value);
+      if (id === conversationIdRef.current) setTitle(value);
+      loadConversations();
+    } catch (err) {
+      toast(errorMessage(err), "error");
     }
   };
 
-  // Group consecutive messages by turnId for rendering
-  const renderGroups: { turnId: string; role: "user" | "assistant"; msgs: ChatMessage[] }[] = [];
-  for (const msg of messages) {
-    const last = renderGroups[renderGroups.length - 1];
-    if (last && last.turnId === msg.turnId) {
-      last.msgs.push(msg);
-    } else {
-      renderGroups.push({ turnId: msg.turnId, role: msg.role, msgs: [msg] });
-    }
+  const confirmPending = async () => {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (!action) return;
+    if (action.kind === "switch") action.run();
+    else await removeTurn(action.turnId);
+  };
+
+  // 给消息组件的回调保持引用不变，没变的消息就不会重新渲染
+  const impl = {
+    respond, acceptStep, discardStep, reviseStep, cancelStepJob, retry, requestDelete, startEdit, cancelEdit, openAttachment, loadConversation,
+  };
+  const implRef = useRef(impl);
+  useEffect(() => { implRef.current = impl; });
+  const handlers = useMemo<StepHandlers>(() => ({
+    onRespond: (turnId, stepId, response) => implRef.current.respond(turnId, { [stepId]: response }),
+    onAccept: (step) => implRef.current.acceptStep(step),
+    onDiscard: (step) => implRef.current.discardStep(step),
+    onRevise: (step, prompt) => implRef.current.reviseStep(step, prompt),
+    onCancelJob: (step) => implRef.current.cancelStepJob(step),
+  }), []);
+  const turnCallbacks = useMemo(() => ({
+    retry: (turnId: string) => implRef.current.retry(turnId),
+    remove: (turnId: string) => implRef.current.requestDelete(turnId),
+    editStart: (turnId: string) => implRef.current.startEdit(turnId),
+    editCancel: () => implRef.current.cancelEdit(),
+    editSubmit: (turnId: string, text: string) => implRef.current.retry(turnId, text),
+    openAttachment: (att: AttachedImage, all: AttachedImage[]) => implRef.current.openAttachment(att, all),
+    openSettings: () => onOpenSettings("models"),
+  }), [onOpenSettings]);
+
+  // ---------- 渲染 ----------
+
+  const chatConfigured = !settings || isRoleConfigured(settings, "chat");
+  const lastTurn = turns[turns.length - 1];
+  const waitingTurn = !loading && lastTurn && isWaiting(lastTurn) && !lastTurn.legacy ? lastTurn : null;
+
+  const streamingTurn = streamingTurnId ? turns.find((turn) => turn.id === streamingTurnId) : undefined;
+  const runningTools = (streamingTurn?.steps || []).filter((s) => s.kind === "tool" && s.status === "running");
+  const now = useNow(loading || activeJobIds.length > 0);
+  const startedAt = runningTools[0]?.started_at ? Date.parse(runningTools[0].started_at) : now;
+  let status = null;
+  if (loading) {
+    status = (
+      <span className="flex items-center gap-1.5 text-brand-500 dark:text-brand-400">
+        <Spinner className="h-3 w-3" />
+        {stopping
+          ? t("chat.stopping")
+          : runningTools.length > 0
+            ? `${toolStatus(runningTools[0].tool || "", t)}${runningTools.length > 1 ? ` ×${runningTools.length}` : ""} · ${formatDuration(Math.max(0, now - startedAt))}`
+            : `${t("chat.thinking")}…`}
+      </span>
+    );
+  } else if (activeJobIds.length > 0) {
+    status = (
+      <span className="flex items-center gap-1.5 text-brand-500 dark:text-brand-400">
+        <Spinner className="h-3 w-3" />
+        {t("chat.backgroundJobs", { count: activeJobIds.length })}
+      </span>
+    );
   }
 
+  const composer = (
+    <Composer
+      value={input}
+      onChange={setInput}
+      attachments={attachments}
+      uploading={uploading}
+      onFiles={uploadFiles}
+      onRemoveAttachment={removeAttachment}
+      onAttachmentClick={(att) => openAttachment(att, attachments)}
+      onSend={handleSend}
+      onStop={stop}
+      loading={loading}
+      blocked={!chatConfigured}
+      mode={activeMode}
+      onModeChange={setMode}
+      interactionMode={interactionMode}
+      onInteractionModeChange={setInteractionMode}
+      settings={settings}
+      onSettingsChange={onSettingsChange}
+      onOpenSettings={onOpenSettings}
+      dragOver={dragOver}
+      status={status}
+      focusKey={focusKey}
+    />
+  );
+
+  const configBanner = !chatConfigured && settings && (
+    <div className="mb-2 flex items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+      <Icon name="alert-triangle" className="h-4 w-4 text-amber-500" />
+      <span className="min-w-0 flex-1">{t("settings.chatMissing")}</span>
+      <button onClick={() => onOpenSettings(settings.providers.length === 0 ? "providers" : "models")} className="btn bg-white text-amber-700 shadow-sm hover:bg-amber-100 dark:bg-amber-500/20 dark:text-amber-100 dark:hover:bg-amber-500/30">
+        {t("settings.goConfigure")}
+      </button>
+    </div>
+  );
+
+  const jumpToPending = () => {
+    const step = waitingTurn?.steps.find(isPendingStep);
+    if (step) document.getElementById(stepDomId(step.id))?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
   return (
-    <div className="flex flex-col h-full relative">
-      {/* Header with conversation history dropdown */}
-      <div className="flex items-center justify-center px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shrink-0">
-        <ConversationHistory
-          conversations={conversations}
-          currentId={conversationId}
-          currentTitle={conversationTitle}
-          onSelect={handleRestoreConversation}
-          onNew={handleNewChat}
-          onDelete={handleDeleteConversation}
-          onRefresh={loadConversations}
-        />
+    <div
+      className="relative flex h-full min-w-0 flex-col"
+      onDragEnter={handleDragEnter}
+      onDragOver={(e) => { if (dragOver) e.preventDefault(); }}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Header */}
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-zinc-200/80 px-3 dark:border-zinc-800/80">
+        <button
+          onClick={onToggleSidebar}
+          className={`icon-btn ${sidebarOpen ? "" : "text-brand-500 dark:text-brand-400"}`}
+          title={t("chat.toggleSidebar")}
+        >
+          <Icon name="panel-left" className="h-[18px] w-[18px]" />
+        </button>
+        <div className="flex min-w-0 flex-1 justify-center">
+          <ConversationHistory
+            conversations={conversations}
+            currentId={conversationId}
+            currentTitle={title}
+            onSelect={restoreConversation}
+            onNew={newChat}
+            onDelete={removeConversation}
+            onRename={renameConv}
+            onRefresh={loadConversations}
+          />
+        </div>
+        <button onClick={newChat} className="icon-btn" title={t("chat.newChat")}>
+          <Icon name="new-chat" className="h-[18px] w-[18px]" />
+        </button>
       </div>
-      {/* Messages / Empty state */}
-      <div className={`flex-1 overflow-y-auto px-44 py-4 ${messages.length === 0 ? "flex flex-col items-center justify-center" : "space-y-4"}`}>
-        {messages.length === 0 && (
-          <div className="text-center text-gray-400 dark:text-gray-500 mb-6 w-full max-w-2xl">
-            <div className="relative w-48 mb-4 mx-auto">
-              <img src="/hero.png" alt="Animegent" className="w-full" />
-              <div className="absolute inset-0 pointer-events-none" style={{
-                background: "radial-gradient(circle, transparent 30%, rgb(249 250 251) 75%)"
-              }} />
+
+      {/* Messages */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onWheel={(e) => { if (e.deltaY < 0) stickRef.current = false; }}
+        className="relative min-h-0 flex-1 overflow-y-auto"
+      >
+        {hasTurns ? (
+          <div ref={contentRef} className="mx-auto w-full max-w-3xl space-y-6 px-4 pb-4 pt-6 sm:px-6">
+            {turns.map((turn) => (
+              <Fragment key={turn.id}>
+                <UserTurn
+                  turn={turn}
+                  editing={editingTurnId === turn.id}
+                  busy={loading}
+                  onEditStart={turnCallbacks.editStart}
+                  onEditSubmit={turnCallbacks.editSubmit}
+                  onEditCancel={turnCallbacks.editCancel}
+                  onRetry={turnCallbacks.retry}
+                  onDelete={turnCallbacks.remove}
+                  onAttachmentClick={turnCallbacks.openAttachment}
+                />
+                <AssistantTurn
+                  turn={turn}
+                  streaming={turn.id === streamingTurnId}
+                  busy={loading}
+                  project={project}
+                  handlers={handlers}
+                  onOpenLink={onOpenLink}
+                  onOpenSettings={turnCallbacks.openSettings}
+                  onRetry={turnCallbacks.retry}
+                  onDelete={turnCallbacks.remove}
+                />
+              </Fragment>
+            ))}
+          </div>
+        ) : restoring ? (
+          <div className="flex h-full items-center justify-center text-brand-500"><Spinner className="h-6 w-6" /></div>
+        ) : (
+          <div className="flex min-h-full flex-col items-center justify-center px-4 py-10 sm:px-6">
+            <div className="w-full max-w-2xl">
+              <ChatEmptyState mode={activeMode} onSuggestion={(text) => { setInput(text); setFocusKey((k) => k + 1); }} />
+              <div className="mt-8">
+                {configBanner}
+                {composer}
+              </div>
             </div>
-            <div className="text-lg font-medium">{t("chat.appName")}</div>
-            <div className="text-sm mt-1">{t("chat.appSubtitle")}</div>
           </div>
         )}
-
-        {renderGroups.map((group) => {
-          const { turnId, role, msgs } = group;
-          const isUser = role === "user";
-          const isAssistant = role === "assistant";
-
-          // Skip empty assistant messages that haven't started streaming
-          if (
-            isAssistant &&
-            msgs.every((m) => !m.content && (!m.toolCalls || m.toolCalls.length === 0)) &&
-            !loading
-          ) {
-            return null;
-          }
-
-          const isEditing = editingTurnId === turnId;
-
-          // Collect data across sub-messages
-          const allAttachedImages = msgs.flatMap((m) => m.attachedImages || []);
-          const textContent = msgs.map((m) => m.content).filter(Boolean).join("\n");
-          const allToolCalls = msgs.flatMap((m) => m.toolCalls || []);
-          const allImages = msgs.flatMap((m) => m.images || []);
-
-          // Check if this is the last group and assistant is streaming
-          const isLastGroup = group === renderGroups[renderGroups.length - 1];
-          const isStreaming = isAssistant && loading && isLastGroup;
-
-          return (
-            <div
-              key={turnId}
-              className={`flex ${isUser ? "justify-end" : "justify-start"} group`}
-            >
-              <div className="flex flex-col max-w-[80%]">
-                <div
-                  className={`rounded-2xl px-4 py-2.5 ${
-                    isUser
-                      ? "bg-blue-500 text-white"
-                      : "bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200"
-                  }`}
-                >
-                  {/* Attached images (user message) */}
-                  {allAttachedImages.length > 0 && (
-                    <div className="mb-2 flex flex-wrap gap-1.5">
-                      {allAttachedImages.map((img, j) => (
-                        <img
-                          key={j}
-                          src={img.previewUrl || getFileUrl(img.url)}
-                          alt={img.name}
-                          className="w-16 h-16 object-cover rounded-lg border border-blue-300"
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Tool calls (assistant) */}
-                  {allToolCalls.length > 0 && (
-                    <div className="mb-2 space-y-1.5">
-                      {allToolCalls.map((tc, j) =>
-                        tc.tool === "propose_plan" && tc.result?.type === "task_plan" ? (
-                          <TaskPlanCard
-                            key={j}
-                            steps={planTurnId === turnId ? planSteps : (tc.result.steps as PlanStep[]) || []}
-                            onConfirm={(steps, auto) => handlePlanConfirm(turnId, steps, auto)}
-                            onRevise={handlePlanRevise}
-                            onContinue={handlePlanContinue}
-                            onCancel={handlePlanCancel}
-                            paused={planTurnId === turnId && planPaused}
-                            disabled={loading}
-                          />
-                        ) : tc.tool === "select_characters" && tc.result?.type === "character_select" ? (
-                          <CharacterSelectCard
-                            key={j}
-                            options={(tc.result.options as CharacterOption[]) || []}
-                            onConfirm={handleCharacterConfirm}
-                            disabled={loading}
-                          />
-                        ) : tc.tool === "select_faces" && tc.result?.type === "face_select" ? (
-                          <FaceSelectCard
-                            key={j}
-                            faces={((tc.result.faces as FaceInfo[]) || []).map((f) => ({
-                              ...f,
-                              crop_url: f.crop_url || "",
-                            }))}
-                            skippedSmall={0}
-                            skippedBlurry={0}
-                            onConfirm={handleFaceConfirm}
-                            disabled={loading}
-                          />
-                        ) : (
-                          <ToolCallCard
-                            key={j}
-                            toolCall={tc}
-                            onAccept={() => handleAccept(turnId, j)}
-                            onReject={() => handleRejectImage(turnId, j)}
-                            onRevise={(prompt) => handleRevise(turnId, j, prompt)}
-                          />
-                        )
-                      )}
-                    </div>
-                  )}
-
-                  {/* Text content (or edit mode) */}
-                  {isEditing ? (
-                    <div className="space-y-2">
-                      <textarea
-                        value={editText}
-                        onChange={(e) => setEditText(e.target.value)}
-                        className="w-full bg-blue-400 text-white rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-white min-h-[60px]"
-                        autoFocus
-                        onCompositionStart={() => { composingRef.current = true; }}
-                        onCompositionEnd={() => { composingRef.current = false; }}
-                        onKeyDown={(e) => {
-                          if (composingRef.current) return;
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleEditConfirm();
-                          }
-                          if (e.key === "Escape") handleEditCancel();
-                        }}
-                      />
-                      <div className="flex gap-2 justify-end">
-                        <button
-                          onClick={handleEditCancel}
-                          className="px-2 py-0.5 text-xs bg-blue-400 text-white rounded hover:bg-blue-300"
-                        >
-                          {t("common.cancel")}
-                        </button>
-                        <button
-                          onClick={handleEditConfirm}
-                          className="px-2 py-0.5 text-xs bg-white dark:bg-gray-800 text-blue-600 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                        >
-                          {t("common.send")}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    textContent && (
-                      <MarkdownText text={textContent} />
-                    )
-                  )}
-
-                  {/* Loading indicator */}
-                  {isStreaming && !textContent && allToolCalls.length === 0 && (
-                    <div className="flex space-x-1.5">
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
-                    </div>
-                  )}
-
-                  {/* Non-generation tool images — only show images not already displayed in ToolCallCards */}
-                  {(() => {
-                    const TOOLS_WITH_CARDS = new Set([
-                      "stylize_character", "generate_asset", "generate_comic_strip", "edit_asset",
-                      "generate_storyboard_strip", "generate_video_clip", "detect_faces_in_image",
-                    ]);
-                    const VIDEO_EXTS = [".mp4", ".webm", ".mov"];
-                    const nonCardImages = allImages.filter((img) => !TOOLS_WITH_CARDS.has(img.tool) && !VIDEO_EXTS.some((ext) => img.path.toLowerCase().endsWith(ext)));
-                    return nonCardImages.length > 0 ? (
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        {nonCardImages.map((img, j) => (
-                          <a key={j} href={getFileUrl(img.url)} target="_blank" rel="noopener noreferrer">
-                            <img src={getFileUrl(img.url)} alt={img.tool} className="rounded-lg border border-gray-200 dark:border-gray-700 max-h-64 object-contain" />
-                          </a>
-                        ))}
-                      </div>
-                    ) : null;
-                  })()}
-                </div>
-
-                {/* Message actions toolbar */}
-                {!isEditing && !isStreaming && (
-                  <MessageActions
-                    role={role}
-                    onCopy={() => handleCopy(turnId)}
-                    onEdit={isUser ? () => handleEditStart(turnId) : undefined}
-                    onRetry={() => handleRetry(turnId, role)}
-                    onDelete={() => handleDelete(turnId)}
-                  />
-                )}
-              </div>
-            </div>
-          );
-        })}
-
-        <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area */}
-      <div className={`transition-all duration-500 ease-in-out ${messages.length === 0
-        ? "px-44 pb-[30vh] relative"
-        : "px-44 pt-3 pb-[72px] relative"
-      }`}>
-        {messages.length > 0 && (
-          <div className="absolute -top-10 left-0 right-0 h-10 bg-gradient-to-t from-gray-50 dark:from-gray-900 to-transparent pointer-events-none" />
-        )}
-        {loading && activeTool && (() => {
-          const skip = new Set(["read_script", "read_storyboard", "list_files"]);
-          if (skip.has(activeTool)) return null;
-          const label = t(`tool.status.${activeTool}` as any) || activeTool;
-          return (
-            <div className="flex items-center gap-2 px-3 py-1.5 mb-1.5">
-              <div className="flex gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-bounce" style={{ animationDelay: "300ms" }} />
-              </div>
-              <span className="text-xs text-pink-400 font-medium">{label}</span>
-            </div>
-          );
-        })()}
-        <div
-          className={`border rounded-2xl transition-colors bg-white dark:bg-gray-800 shadow-lg dark:shadow-gray-900/50 ${
-            dragOver
-              ? "border-blue-400 bg-blue-50 dark:bg-blue-900/30"
-              : "border-gray-200 dark:border-gray-700 focus-within:border-pink-400 focus-within:ring-1 focus-within:ring-pink-400"
-          }`}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-        >
-          {/* Attached assets inside input box */}
-          {(attachedImages.length > 0 || uploading) && (
-            <div className="px-3 pt-3 flex flex-wrap gap-2">
-              {attachedImages.map((att, i) => {
-                const ft = att.fileType || "image";
-                const isImg = ft === "image";
-                return (
-                  <div
-                    key={i}
-                    className="relative group cursor-pointer"
-                    onClick={() => onPendingAssetClick?.(att.path)}
-                  >
-                    {isImg ? (
-                      <img
-                        src={att.previewUrl || getFileUrl(att.url)}
-                        alt={att.name}
-                        className="w-16 h-16 object-cover rounded-xl border border-gray-200 dark:border-gray-700"
-                      />
-                    ) : (
-                      <div className="h-16 flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-2.5">
-                        <span className="text-sm text-gray-400 dark:text-gray-500 font-mono">
-                          {ft === "json" ? "{}" : "MD"}
-                        </span>
-                        <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate max-w-[80px]">
-                          {att.name}
-                        </span>
-                      </div>
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); removeAttached(i); }}
-                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-600 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                    >
-                      ×
-                    </button>
-                  </div>
-                );
-              })}
-              {uploading && (
-                <div className="w-16 h-16 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-                  <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                </div>
-              )}
-            </div>
+      {hasTurns && (
+        <div className="relative shrink-0 px-4 pb-3 sm:px-6">
+          <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-zinc-50 to-transparent dark:from-zinc-950" />
+          {showJump && (
+            <button
+              onClick={() => scrollToBottom()}
+              title={t("chat.scrollToBottom")}
+              className="absolute -top-11 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 animate-fade-in items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-soft transition-colors hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:text-white"
+            >
+              <Icon name="arrow-down" className="h-4 w-4" />
+            </button>
           )}
-
-          {/* Drag overlay hint */}
-          {dragOver && (
-            <div className="px-3 pt-2 text-xs text-blue-500 text-center">
-              {t("chat.dropHint")}
-            </div>
-          )}
-
-          {/* Text input */}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => { setInput(e.target.value); autoResize(); }}
-            onKeyDown={handleKeyDown}
-            onCompositionStart={() => { composingRef.current = true; }}
-            onCompositionEnd={() => { composingRef.current = false; }}
-            onPaste={handlePaste}
-            placeholder={t("chat.inputPlaceholder")}
-            className="w-full resize-none border-0 bg-transparent px-4 py-2.5 text-sm focus:outline-none dark:text-gray-200 dark:placeholder-gray-500"
-            style={{ maxHeight: 160 }}
-            rows={5}
-          />
-
-          {/* Bottom toolbar */}
-          <div className="flex items-center justify-between px-2 pb-2">
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
-                title={t("chat.uploadImage")}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                  <polyline points="17 8 12 3 7 8"/>
-                  <line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={handleFileSelect}
-                className="hidden"
+          <div className="mx-auto w-full max-w-3xl">
+            {configBanner}
+            {waitingTurn && (
+              <ApprovalDock
+                turn={waitingTurn}
+                busy={loading}
+                onApproveAll={() => respondAll(waitingTurn, { approve: true })}
+                onRejectAll={(note) => respondAll(waitingTurn, { approve: false, note })}
+                onJump={jumpToPending}
               />
-              <div className="h-4 w-px bg-gray-200" />
-              <div className="flex flex-col items-center">
-                <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
-                <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-none mt-0.5">{t("toolbar.mode")}</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <InteractionModeSelector mode={interactionMode} onChange={setInteractionMode} disabled={loading} />
-                <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-none mt-0.5">{t("toolbar.style")}</span>
-              </div>
-              {mode === "storyboard" && (
-                <div className="flex flex-col items-center">
-                  <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-md p-0.5 text-[11px]">
-                    {(["grok", "veo"] as const).map((v) => (
-                      <button
-                        key={v}
-                        onClick={() => setVideoMode(v)}
-                        disabled={loading}
-                        className={`px-2 py-0.5 rounded transition-colors ${
-                          videoMode === v
-                            ? "bg-white dark:bg-gray-600 text-gray-800 dark:text-gray-100 shadow-sm font-medium"
-                            : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        } disabled:opacity-50`}
-                      >
-                        {v === "grok" ? "Grok" : "Veo"}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-none mt-0.5">{t("toolbar.videoModel")}</span>
-                </div>
-              )}
-            </div>
-            {loading ? (
-              <button
-                onClick={handleStop}
-                className="p-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
-                title={t("chat.stop")}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
-              </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!input.trim() && attachedImages.length === 0}
-                className="p-1.5 bg-pink-500 text-white rounded-lg hover:bg-pink-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title={t("common.send")}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="19" x2="12" y2="5"/>
-                  <polyline points="5 12 12 5 19 12"/>
-                </svg>
-              </button>
             )}
+            {composer}
           </div>
         </div>
-      </div>
+      )}
+
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-2 z-20 flex animate-fade-in items-center justify-center rounded-2xl border-2 border-dashed border-brand-400 bg-brand-50/70 backdrop-blur-[1px] dark:bg-brand-500/10">
+          <div className="flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-brand-600 shadow-soft dark:bg-zinc-900 dark:text-brand-300">
+            <Icon name="image-plus" className="h-5 w-5" />
+            {t("chat.dropHint")}
+          </div>
+        </div>
+      )}
+
+      {pendingAction?.kind === "switch" && (
+        <ConfirmDialog
+          title={t("app.busyTitle")}
+          message={t("app.busySwitch")}
+          confirmLabel={t("app.stopAndSwitch")}
+          onConfirm={confirmPending}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
+      {pendingAction?.kind === "delete" && (
+        <ConfirmDialog
+          title={t("chat.deleteTitle")}
+          message={t("chat.deleteConfirm")}
+          confirmLabel={t("common.delete")}
+          onConfirm={confirmPending}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
     </div>
   );
 }

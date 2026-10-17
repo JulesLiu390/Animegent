@@ -2,20 +2,204 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
-
 @layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply m-0 bg-zinc-50 font-sans text-zinc-900;
   }
   html.dark body {
-    @apply bg-gray-900 text-gray-100;
+    @apply bg-zinc-950 text-zinc-100;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  ::selection {
+    @apply bg-brand-200 text-zinc-900;
+  }
+  html.dark ::selection {
+    @apply bg-brand-500/40 text-white;
+  }
+  /* 键盘操作时按钮 / 链接的焦点框；输入框有自己的焦点样式 */
+  button:focus-visible,
+  a:focus-visible,
+  summary:focus-visible,
+  [role="radio"]:focus-visible {
+    @apply outline-none ring-2 ring-brand-400/70;
+  }
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+  }
+  button {
+    @apply select-none;
   }
 }
 
 #root {
   height: 100vh;
+  height: 100dvh;
+}
+
+/* 细滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(161 161 170 / 0.45) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(161 161 170 / 0.4);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(161 161 170 / 0.7);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@layer components {
+  /* 按钮 */
+  .btn {
+    @apply inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply btn bg-brand-500 text-white shadow-sm hover:bg-brand-600 active:bg-brand-700;
+  }
+  .btn-secondary {
+    @apply btn bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700;
+  }
+  .btn-ghost {
+    @apply btn text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100;
+  }
+  .btn-danger {
+    @apply btn bg-red-500 text-white shadow-sm hover:bg-red-600;
+  }
+  .btn-danger-soft {
+    @apply btn bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20;
+  }
+  .icon-btn {
+    @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100;
+  }
+  .icon-btn-sm {
+    @apply icon-btn h-7 w-7 rounded-md;
+  }
+
+  /* 输入框 */
+  .field {
+    @apply rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-800 placeholder-zinc-400 transition-colors focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-400/20 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500;
+  }
+
+  /* 卡片 / 弹层 */
+  .panel {
+    @apply rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900;
+  }
+  .popover {
+    @apply animate-pop-in rounded-xl border border-zinc-200 bg-white shadow-pop dark:border-zinc-700/80 dark:bg-zinc-900;
+  }
+  .menu-item {
+    @apply flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-4;
+  }
+  .kbd {
+    @apply rounded border border-zinc-200 bg-zinc-50 px-1 font-mono text-[10px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400;
+  }
+  .skeleton {
+    @apply animate-shimmer rounded-lg bg-[length:200%_100%];
+    background-image: linear-gradient(90deg, rgb(228 228 231 / 0.6) 25%, rgb(244 244 245 / 0.9) 37%, rgb(228 228 231 / 0.6) 63%);
+  }
+  html.dark .skeleton {
+    background-image: linear-gradient(90deg, rgb(39 39 42 / 0.8) 25%, rgb(63 63 70 / 0.8) 37%, rgb(39 39 42 / 0.8) 63%);
+  }
+}
+
+/* Markdown 正文 */
+.md {
+  @apply text-[14px] leading-relaxed text-zinc-800 dark:text-zinc-200;
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p {
+  @apply my-2;
+}
+.md h1 {
+  @apply mb-2 mt-4 text-lg font-bold text-zinc-900 dark:text-zinc-50;
+}
+.md h2 {
+  @apply mb-2 mt-4 text-base font-semibold text-zinc-900 dark:text-zinc-50;
+}
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  @apply mb-1.5 mt-3 text-sm font-semibold text-zinc-900 dark:text-zinc-50;
+}
+.md ul {
+  @apply my-2 list-disc space-y-1 pl-5 marker:text-zinc-400;
+}
+.md ol {
+  @apply my-2 list-decimal space-y-1 pl-5 marker:text-zinc-400;
+}
+.md li > ul,
+.md li > ol {
+  @apply my-1;
+}
+.md strong {
+  @apply font-semibold text-zinc-900 dark:text-zinc-50;
+}
+.md a {
+  @apply font-medium text-brand-600 underline decoration-brand-300 underline-offset-2 hover:decoration-brand-500 dark:text-brand-400 dark:decoration-brand-700;
+}
+.md blockquote {
+  @apply my-3 border-l-[3px] border-brand-200 pl-3 text-zinc-600 dark:border-brand-800 dark:text-zinc-400;
+}
+.md hr {
+  @apply my-4 border-zinc-200 dark:border-zinc-800;
+}
+.md :not(pre) > code {
+  @apply rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono text-[12px] text-brand-700 dark:bg-zinc-800 dark:text-brand-300;
+}
+.md pre {
+  @apply my-3 overflow-x-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-[12px] leading-relaxed text-zinc-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200;
+}
+.md table {
+  @apply w-full border-collapse text-[13px];
+}
+.md th {
+  @apply border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left font-semibold text-zinc-700 dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-200;
+}
+.md td {
+  @apply border-b border-zinc-100 px-3 py-2 align-top dark:border-zinc-800/70;
+}
+.md tr:last-child td {
+  @apply border-b-0;
+}
+.md img {
+  @apply my-2 max-h-80 cursor-zoom-in rounded-xl border border-zinc-200 bg-white object-contain dark:border-zinc-800 dark:bg-zinc-900;
+}
+.md-sm {
+  @apply text-[13px];
+}
+
+/* 流式输出时末尾的光标 */
+.md-streaming > :last-child::after {
+  content: "";
+  @apply ml-0.5 inline-block h-[1em] w-[2px] translate-y-[3px] animate-blink rounded-full bg-brand-500 align-baseline;
 }

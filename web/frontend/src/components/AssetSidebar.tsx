@@ -1,216 +1,228 @@
-import { useState } from "react";
-import type { Assets } from "../api";
-import { getFileUrl, deleteAsset } from "../api";
-import { useLang } from "../LanguageContext";
+import { useState, type DragEvent } from "react";
+import type { Asset, Assets } from "../api";
+import { deleteAsset, getFileUrl } from "../api";
+import { useLang, useToast } from "../hooks";
+import { CATEGORIES, DRAG_ASSET_TYPE, type Layout } from "../lib/assets";
+import { naturalCompare } from "../lib/format";
+import { readJson, writeJson } from "../lib/storage";
 import ConfirmDialog from "./ConfirmDialog";
+import Icon, { Spinner } from "./Icon";
 
-const CAT_KEYS: Record<string, string> = {
-  style: "cat.style",
-  originals: "cat.input",
-  characters: "cat.stylized",
-  faces: "cat.faces",
-  scenes: "cat.scenes_stylized",
-  scenes_raw: "cat.scenes_no_people",
-  panels: "cat.panels",
-  clips: "cat.clips",
-  final_videos: "cat.final_videos",
-  storyboard_strips: "cat.storyboard_strips",
-  storyboard_frames: "cat.storyboard_frames",
-  storyboards: "cat.storyboards",
-  clip_scripts: "cat.clip_scripts",
-  scripts: "cat.scripts",
+const GRID: Record<Exclude<Layout, "list">, string> = {
+  grid2: "grid-cols-2",
+  grid3: "grid-cols-3",
+  grid4: "grid-cols-4",
 };
+
+const COLLAPSE_KEY = "animegent-sidebar-collapsed";
 
 interface Props {
   assets: Assets;
-  loading?: boolean;
-  onAssetClick?: (path: string) => void;
-  onRefresh?: () => void;
-  onDeleteAsset?: (path: string) => void;
+  loading: boolean;
+  refreshing: boolean;
+  selectedPath: string | null;
+  onRefresh: () => void;
+  onAssetClick: (asset: Asset, category: string) => void;
+  onAddToChat: (asset: Asset) => void;
+  onDeleted: (path: string) => void;
+  onCollapse: () => void;
 }
 
-export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh, onDeleteAsset }: Props) {
+const firstLine = (text?: string) => (text || "").split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) || "";
+
+export default function AssetSidebar({ assets, loading, refreshing, selectedPath, onRefresh, onAssetClick, onAddToChat, onDeleted, onCollapse }: Props) {
   const { t } = useLang();
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const toast = useToast();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => readJson(COLLAPSE_KEY, {}));
+  const [deleteTarget, setDeleteTarget] = useState<Asset | null>(null);
 
-  const toggleCategory = (category: string) => {
-    setCollapsed((prev) => ({ ...prev, [category]: !prev[category] }));
-  };
+  const toggle = (category: string) => setCollapsed((prev) => {
+    const next = { ...prev, [category]: !prev[category] };
+    writeJson(COLLAPSE_KEY, next);
+    return next;
+  });
 
-  // Categories that show one item per row at original aspect ratio, sorted numerically
-  const SINGLE_COL_CATS = new Set(["storyboard_strips", "storyboard_frames"]);
-  const THREE_COL_CATS = new Set(["characters", "faces"]);
-  const NUM_SORT_CATS = new Set(["storyboard_strips", "storyboard_frames", "clip_scripts", "clips"]);
+  const sections = Object.keys(CATEGORIES)
+    .filter((key) => (assets[key]?.length ?? 0) > 0)
+    .map((key) => ({ key, info: CATEGORIES[key], items: [...assets[key]].sort((a, b) => naturalCompare(a.name, b.name)) }));
+  const total = sections.reduce((sum, s) => sum + s.items.length, 0);
 
-  const numSort = (a: { name: string }, b: { name: string }) => {
-    const na = parseInt(a.name.match(/\d+/)?.[0] || "0", 10);
-    const nb = parseInt(b.name.match(/\d+/)?.[0] || "0", 10);
-    return na - nb;
-  };
-
-  const [deleteTarget, setDeleteTarget] = useState<{ name: string; path: string } | null>(null);
-
-  const handleDeleteConfirm = async () => {
-    if (!deleteTarget) return;
-    try {
-      await deleteAsset(deleteTarget.path);
-      onDeleteAsset?.(deleteTarget.path);
-    } catch (err) {
-      console.error("Delete failed:", err);
-    }
+  const confirmDelete = async () => {
+    const target = deleteTarget;
     setDeleteTarget(null);
+    if (!target) return;
+    try {
+      const res = await deleteAsset(target.path);
+      if (res.deleted === false) throw new Error(res.error || "delete failed");
+      onDeleted(target.path);
+      toast(t("sidebar.deleted"), "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    }
   };
+
+  const dragStart = (e: DragEvent, asset: Asset) => {
+    e.dataTransfer.setData(DRAG_ASSET_TYPE, JSON.stringify(asset));
+    e.dataTransfer.effectAllowed = "copy";
+  };
+
+  const tileActions = (asset: Asset, deletable: boolean) => (
+    <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+      <button
+        onClick={(e) => { e.stopPropagation(); onAddToChat(asset); }}
+        title={t("sidebar.addToChat")}
+        className="flex h-6 w-6 items-center justify-center rounded-md bg-zinc-900/60 text-white backdrop-blur transition-colors hover:bg-brand-500"
+      >
+        <Icon name="plus" className="h-3.5 w-3.5" strokeWidth={2.5} />
+      </button>
+      {deletable && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setDeleteTarget(asset); }}
+          title={t("common.delete")}
+          className="flex h-6 w-6 items-center justify-center rounded-md bg-zinc-900/60 text-white backdrop-blur transition-colors hover:bg-red-500"
+        >
+          <Icon name="trash" className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
 
   return (
-    <div className="w-96 bg-pink-50 dark:bg-gray-800 border-r border-pink-200/60 dark:border-gray-700 flex flex-col h-full p-5">
-      <div className="px-2 py-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">{t("sidebar.title")}</h2>
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            className="px-2 py-0.5 text-[11px] font-medium text-pink-500 dark:text-gray-400 bg-pink-100 dark:bg-gray-700 hover:bg-pink-200 dark:hover:bg-gray-600 rounded-md transition-colors"
-          >
-            {t("common.refresh")}
-          </button>
-        )}
+    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-925">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-zinc-200/80 px-3 dark:border-zinc-800/80">
+        <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{t("sidebar.title")}</h2>
+        {total > 0 && <span className="chip bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{total}</span>}
+        <span className="flex-1" />
+        <button onClick={onRefresh} className="icon-btn-sm" title={t("common.refresh")}>
+          {refreshing ? <Spinner className="h-3.5 w-3.5" /> : <Icon name="refresh" className="h-3.5 w-3.5" />}
+        </button>
+        <button onClick={onCollapse} className="icon-btn-sm" title={t("sidebar.collapse")}>
+          <Icon name="chevron-left" className="h-4 w-4" />
+        </button>
       </div>
-      <div className="flex-1 overflow-y-auto">
-        {loading && (
-          <div className="flex items-center justify-center py-8">
-            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-          </div>
-        )}
-        {!loading && Object.entries(assets).map(([category, items]) => (
-          <div key={category} className="border-b border-gray-100 dark:border-gray-700">
-            <button
-              onClick={() => toggleCategory(category)}
-              className="w-full px-3 py-2 text-xs font-medium text-pink-400 dark:text-gray-400 uppercase tracking-wide bg-pink-100/50 dark:bg-gray-700/80 flex items-center justify-between hover:bg-pink-100 dark:hover:bg-gray-700 transition-colors"
-            >
-              <span>{t(CAT_KEYS[category] || category)} ({items.length})</span>
-              <span className={`text-[10px] transition-transform ${collapsed[category] ? "" : "rotate-90"}`}>▶</span>
-            </button>
-            {!collapsed[category] && (items.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">{t("sidebar.empty")}</div>
-            ) : SINGLE_COL_CATS.has(category) ? (
-              <div className="p-2 flex flex-col gap-1.5">
-                {[...items].sort(numSort).map((item) => (
-                  <div
-                    key={item.name}
-                    className="cursor-pointer group relative"
-                    onClick={() => onAssetClick?.(item.path)}
-                  >
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget({ name: item.name, path: item.path });
-                      }}
-                      className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
-                    >
-                      ×
-                    </button>
-                    <img
-                      src={getFileUrl(item.url)}
-                      alt={item.name}
-                      className="w-full rounded-xl border border-gray-200 dark:border-gray-700 group-hover:border-blue-400 transition-colors"
-                    />
-                    <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate mt-0.5 text-center">
-                      {item.name}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className={`p-2 grid gap-1.5 ${THREE_COL_CATS.has(category) ? "grid-cols-3" : "grid-cols-2"}`}>
-                {(NUM_SORT_CATS.has(category) ? [...items].sort(numSort) : items).map((item) =>
-                  item.type === "image" ? (
-                    <div
-                      key={item.name}
-                      className="cursor-pointer group relative"
-                      onClick={() => onAssetClick?.(item.path)}
-                    >
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget({ name: item.name, path: item.path });
-                        }}
-                        className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
-                      >
-                        ×
-                      </button>
-                      <img
-                        src={getFileUrl(item.url)}
-                        alt={item.name}
-                        className={`w-full rounded-xl border border-gray-200 dark:border-gray-700 group-hover:border-blue-400 transition-colors ${
-                          THREE_COL_CATS.has(category) ? "object-cover" : "aspect-square object-cover"
-                        }`}
-                      />
-                      <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate mt-0.5 text-center">
-                        {item.name}
-                      </div>
-                    </div>
-                  ) : item.type === "video" ? (
-                    <div
-                      key={item.name}
-                      className="cursor-pointer group relative"
-                      onClick={() => onAssetClick?.(item.path)}
-                    >
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget({ name: item.name, path: item.path });
-                        }}
-                        className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
-                      >
-                        ×
-                      </button>
-                      <div className="relative w-full aspect-video rounded-xl border border-gray-200 dark:border-gray-700 group-hover:border-blue-400 transition-colors overflow-hidden bg-gray-900">
-                        {item.thumbnail ? (
-                          <img
-                            src={getFileUrl(item.thumbnail)}
-                            alt={item.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : null}
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <div className="w-6 h-6 bg-black/50 rounded-full flex items-center justify-center">
-                            <svg className="w-3 h-3 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-                              <path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
-                            </svg>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      key={item.name}
-                      className="col-span-2 px-2 py-1.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded cursor-pointer truncate group relative"
-                      onClick={() => onAssetClick?.(item.path)}
-                    >
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget({ name: item.name, path: item.path });
-                        }}
-                        className="absolute top-1 right-1 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
-                      >
-                        ×
-                      </button>
-                      {item.name}
-                    </div>
-                  )
-                )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+        {loading && total === 0 ? (
+          <div className="space-y-4 p-3">
+            {[0, 1].map((i) => (
+              <div key={i}>
+                <div className="skeleton mb-2 h-3 w-20" />
+                <div className="grid grid-cols-3 gap-2">
+                  {[0, 1, 2, 3, 4, 5].map((j) => <div key={j} className="skeleton aspect-[3/4]" />)}
+                </div>
               </div>
             ))}
           </div>
-        ))}
+        ) : total === 0 ? (
+          <div className="flex flex-col items-center px-6 py-16 text-center">
+            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 text-zinc-400 dark:bg-zinc-800">
+              <Icon name="layers" className="h-6 w-6" />
+            </div>
+            <div className="text-sm font-medium text-zinc-600 dark:text-zinc-300">{t("sidebar.empty")}</div>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-400">{t("sidebar.emptyHint")}</p>
+          </div>
+        ) : (
+          sections.map(({ key, info, items }) => (
+            <section key={key}>
+              <button
+                onClick={() => toggle(key)}
+                className="sticky top-0 z-10 flex w-full items-center gap-2 bg-white/95 px-3 py-2 text-left backdrop-blur dark:bg-zinc-925/95"
+              >
+                <Icon name="chevron-right" className={`h-3 w-3 text-zinc-400 transition-transform ${collapsed[key] ? "" : "rotate-90"}`} />
+                <Icon name={info.icon} className="h-3.5 w-3.5 text-zinc-400" />
+                <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t(info.label)}</span>
+                <span className="text-[11px] tabular-nums text-zinc-400">{items.length}</span>
+              </button>
+              {!collapsed[key] && (info.layout === "list" ? (
+                <div className="space-y-0.5 px-2 pb-2">
+                  {items.map((asset) => (
+                    <div
+                      key={asset.path}
+                      draggable
+                      onDragStart={(e) => dragStart(e, asset)}
+                      onClick={() => onAssetClick(asset, key)}
+                      className={`group relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors ${
+                        selectedPath === asset.path ? "bg-brand-50 dark:bg-brand-500/10" : "hover:bg-zinc-100 dark:hover:bg-zinc-800/70"
+                      }`}
+                    >
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        <Icon name={asset.type === "json" ? "braces" : info.icon} className="h-3.5 w-3.5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-medium text-zinc-700 dark:text-zinc-200">
+                            {key === "skills" ? asset.title || asset.name : asset.name}
+                          </span>
+                          {key === "skills" && asset.source === "project" && (
+                            <span className="chip shrink-0 bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-300">{t("sidebar.projectSkill")}</span>
+                          )}
+                        </div>
+                        {(key === "skills" ? asset.description : firstLine(asset.content)) && (
+                          <div className="truncate text-[11px] text-zinc-400">{key === "skills" ? asset.description : firstLine(asset.content)}</div>
+                        )}
+                      </div>
+                      {tileActions(asset, key !== "style" && !asset.readonly)}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className={`grid gap-2 px-3 pb-3 ${GRID[info.layout]}`}>
+                  {items.map((asset) => {
+                    const video = asset.type === "video";
+                    const thumb = video ? asset.thumbnail : asset.url;
+                    const label = asset.title || asset.name;
+                    return (
+                      <div
+                        key={asset.path}
+                        draggable
+                        onDragStart={(e) => dragStart(e, asset)}
+                        className="group relative min-w-0"
+                        title={asset.description ? `${label}\n${asset.description}` : label}
+                      >
+                        <button
+                          onClick={() => onAssetClick(asset, key)}
+                          className={`relative block w-full overflow-hidden rounded-lg bg-zinc-100 transition-all dark:bg-zinc-800 ${info.aspect} ${
+                            selectedPath === asset.path
+                              ? "ring-2 ring-brand-500 ring-offset-1 ring-offset-white dark:ring-offset-zinc-925"
+                              : "ring-1 ring-zinc-200 hover:ring-brand-300 dark:ring-zinc-700/80 dark:hover:ring-brand-500/50"
+                          }`}
+                        >
+                          {thumb ? (
+                            <img src={getFileUrl(thumb)} alt="" loading="lazy" draggable={false} className={`h-full w-full object-cover ${info.fit || ""}`} />
+                          ) : (
+                            <span className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-500"><Icon name="video" className="h-5 w-5" /></span>
+                          )}
+                          {video && (
+                            <span className="absolute inset-0 flex items-center justify-center">
+                              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur">
+                                <Icon name="play" className="ml-0.5 h-3 w-3" />
+                              </span>
+                            </span>
+                          )}
+                        </button>
+                        {info.layout !== "grid4" && (
+                          <div className="mt-1 truncate px-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{label}</div>
+                        )}
+                        {tileActions(asset, true)}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </section>
+          ))
+        )}
       </div>
+
       {deleteTarget && (
         <ConfirmDialog
-          message={t("sidebar.deleteConfirm", { name: deleteTarget.name })}
-          onConfirm={handleDeleteConfirm}
+          title={t("sidebar.deleteTitle")}
+          message={t("sidebar.deleteConfirm", { name: deleteTarget.title || deleteTarget.name })}
+          confirmLabel={t("common.delete")}
+          onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}
         />
       )}
-    </div>
+    </aside>
   );
 }

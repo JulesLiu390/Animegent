@@ -6,25 +6,11 @@
 import logging
 from pathlib import Path
 
-from google.genai.types import GenerateContentConfig, Part
-
 from mcp.server.fastmcp import FastMCP
 
-from src.tools.models.registry import get_genai_client
+from src.providers import image as image_provider
 
 logger = logging.getLogger(__name__)
-
-IMAGE_MODEL = "gemini-3.1-flash-image-preview"
-
-
-def _guess_mime(path: Path) -> str:
-    suffix = path.suffix.lower()
-    return {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-    }.get(suffix, "application/octet-stream")
 
 
 def register(mcp: FastMCP) -> None:
@@ -52,29 +38,21 @@ def register(mcp: FastMCP) -> None:
         Returns:
             生成结果，包含输出路径。
         """
-        contents: list = []
-
-        # 添加角色图
+        # 角色图 + 场景图作为参考图
+        references: list[str] = []
         char_labels = []
         for i, cp in enumerate(character_paths):
-            p = Path(cp)
-            if not p.exists():
+            if not Path(cp).exists():
                 return {"error": f"角色图不存在: {cp}"}
-            contents.append(
-                Part.from_bytes(data=p.read_bytes(), mime_type=_guess_mime(p))
-            )
+            references.append(cp)
             label = chr(ord("A") + i)
             char_labels.append(f"Image {i + 1}: Character {label}")
 
-        # 添加场景图
         scene_label = ""
         if scene_path:
-            sp = Path(scene_path)
-            if not sp.exists():
+            if not Path(scene_path).exists():
                 return {"error": f"场景图不存在: {scene_path}"}
-            contents.append(
-                Part.from_bytes(data=sp.read_bytes(), mime_type=_guess_mime(sp))
-            )
+            references.append(scene_path)
             scene_label = f"Image {len(character_paths) + 1}: Scene/Background\n"
 
         # 构建 prompt
@@ -96,42 +74,16 @@ def register(mcp: FastMCP) -> None:
             f"- Dialogue bubbles in Chinese\n"
             f"Output a single comic panel image."
         )
-        contents.append(prompt)
-
         try:
-            client = get_genai_client()
-            resp = client.models.generate_content(
-                model=IMAGE_MODEL,
-                contents=contents,
-                config=GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                ),
-            )
-
-            image_bytes = None
-            text_response = None
-            if resp.candidates:
-                for part in resp.candidates[0].content.parts:
-                    if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                        image_bytes = part.inline_data.data
-                    if part.text:
-                        text_response = part.text
-
-            if image_bytes is None:
-                return {"error": "Gemini 未返回图片", "text": text_response}
-
-            out = Path(output_path)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(image_bytes)
-
+            image = image_provider.generate(prompt, references)
+            out = image_provider.save(image, output_path)
             result = {
                 "output_path": str(out),
                 "characters": character_paths,
                 "description": description,
             }
-            if text_response:
-                result["text"] = text_response
+            if image.text:
+                result["text"] = image.text
             return result
-
         except Exception as e:
             return {"error": str(e)}

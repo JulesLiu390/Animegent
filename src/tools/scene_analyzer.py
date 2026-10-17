@@ -11,9 +11,9 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from src.providers.http import image_part
 from src.tools.gemini_image import edit_image
 from src.tools.gemini_text import analyze_multimodal
-from src.tools.face_stylizer import _guess_mime
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def _remove_people(
     image_path: Path,
     output_path: Path,
 ) -> Path:
-    """用 Gemini 图像编辑去除图片中的人物。"""
+    """用图片编辑模型去除图片中的人物。"""
     return edit_image(
         image_path=image_path,
         prompt=REMOVE_PEOPLE_PROMPT,
@@ -69,18 +69,9 @@ def _remove_people(
     )
 
 
-def _analyze_and_deduplicate(
-    image_paths: list[Path],
-    model: str = "gemini-3-flash-preview",
-) -> SceneAnalysisResult:
-    """用 Gemini Flash 分析所有图片，去重并选出代表场景。"""
-    from google.genai.types import Part
-
-    contents: list = []
-    for i, img_path in enumerate(image_paths):
-        contents.append(
-            Part.from_bytes(data=img_path.read_bytes(), mime_type=_guess_mime(img_path))
-        )
+def _analyze_and_deduplicate(image_paths: list[Path]) -> SceneAnalysisResult:
+    """用视觉模型分析所有图片，去重并选出代表场景。"""
+    contents: list = [image_part(img_path) for img_path in image_paths]
 
     index_desc = "\n".join(f"Image {i + 1}: {p.name}" for i, p in enumerate(image_paths))
     contents.append(
@@ -94,24 +85,18 @@ def _analyze_and_deduplicate(
         "→ scene with best_image_index=2, all_image_indices=[0,2,5]"
     )
 
-    return analyze_multimodal(
-        contents=contents,
-        schema=SceneAnalysisResult,
-        model=model,
-    )
+    return analyze_multimodal(contents=contents, schema=SceneAnalysisResult)
 
 
 def analyze_scenes(
     image_paths: list[str | Path],
     output_dir: str | Path,
-    model: str = "gemini-3-flash-preview",
 ) -> tuple[SceneAnalysisResult, list[Path]]:
     """完整场景分析流程：去重 → 去人 → 动画化。
 
     Args:
         image_paths: 输入图片路径列表。
         output_dir: 输出目录。
-        model: LLM 分析模型。
 
     Returns:
         (场景分析JSON结果, 动画化场景图片路径列表)
@@ -122,7 +107,7 @@ def analyze_scenes(
 
     # 1. LLM 分析去重，选出代表场景
     logger.info(f"分析 {len(image_paths)} 张图片的场景...")
-    analysis = _analyze_and_deduplicate(image_paths, model=model)
+    analysis = _analyze_and_deduplicate(image_paths)
     logger.info(f"识别出 {len(analysis.scenes)} 个独立场景")
 
     # 保存分析 JSON
@@ -160,6 +145,7 @@ def analyze_scenes(
                 image_path=no_people_path,
                 prompt=SCENE_STYLIZE_PROMPT,
                 output_path=stylized_path,
+                aspect_ratio="16:9",
             )
             logger.info(f"  动画化完成: {stylized_path}")
             stylized_paths.append(stylized_path)

@@ -1,4 +1,6 @@
 .env
+settings.json
+settings.json.tmp
 __pycache__/
 projects/
 *.pyc
@@ -15,3 +17,4 @@ logs/
 *.db-shm
 docs/
 tmp/
+.cache/

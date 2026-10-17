@@ -17,10 +17,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from google.genai.types import Part
 from PIL import Image
 from pydantic import BaseModel
 
+from src.providers.http import image_part
 from src.tools.gemini_text import analyze_multimodal
 from src.tools.person_detector import FaceBox, detect_faces
 
@@ -29,12 +29,9 @@ logger = logging.getLogger(__name__)
 # 余弦相似度阈值，高于此值认为是同一个人
 DEFAULT_SIMILARITY_THRESHOLD = 0.4
 
-# LLM 分析默认模型
-DEFAULT_LLM_MODEL = "gemini-3-flash-preview"
-
 
 class _ClusterMergeResult(BaseModel):
-    """Gemini 判断哪些聚类应该合并。"""
+    """视觉模型判断哪些聚类应该合并。"""
     groups: list[list[int]]  # 应该合并的聚类索引分组
     reason: str
 
@@ -93,16 +90,14 @@ def _get_cluster_representative(cluster: list["FaceOccurrence"]) -> "FaceOccurre
 
 def _merge_clusters_with_llm(
     clusters: list[list["FaceOccurrence"]],
-    model: str = DEFAULT_LLM_MODEL,
 ) -> list[list["FaceOccurrence"]]:
-    """用 Gemini Flash 判断哪些聚类应该合并（同一人被 embedding 分到了不同聚类）。
+    """用视觉模型判断哪些聚类应该合并（同一人被 embedding 分到了不同聚类）。
 
-    每个聚类取 bbox 最大的人脸作为代表，全部发给 Gemini 做视觉比对，
+    每个聚类取 bbox 最大的人脸作为代表，全部发给视觉模型做比对，
     返回合并后的聚类列表。
 
     Args:
         clusters: embedding 聚类结果。
-        model: LLM 模型。
 
     Returns:
         合并后的聚类列表。
@@ -116,8 +111,7 @@ def _merge_clusters_with_llm(
     # 构建 contents: 每个聚类的代表脸 + prompt
     contents: list = []
     for i, rep in enumerate(representatives):
-        face_bytes = _crop_face_bytes(rep)
-        contents.append(Part.from_bytes(data=face_bytes, mime_type="image/jpeg"))
+        contents.append(image_part(_crop_face_bytes(rep), "image/jpeg"))
 
     index_desc = "\n".join(f"Image {i + 1}: cluster #{i}" for i in range(len(clusters)))
     contents.append(
@@ -137,7 +131,6 @@ def _merge_clusters_with_llm(
         result = analyze_multimodal(
             contents=contents,
             schema=_ClusterMergeResult,
-            model=model,
             max_retries=2,
         )
         # 验证索引合法性

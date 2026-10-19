@@ -6,6 +6,7 @@ HTTP 请求用 httpx.MockTransport 模拟各家接口，不需要真实 API Key�
 import base64
 import io
 import json
+import threading
 
 import httpx
 import pytest
@@ -78,7 +79,7 @@ def test_bootstrap_imports_legacy_env(isolated_settings):
     assert provider_settings.resolve("image").format == "gemini"
     assert provider_settings.resolve("video").model == "grok-video-3"
     assert provider_settings.resolve("video").format == "unified"
-    assert provider_settings.concurrency("chat") == 2
+    assert provider_settings.concurrency("chat") == 3  # 并发上限默认 3，和 Key 的数量无关
 
 
 def test_unconfigured_role_raises_without_creating_file(isolated_settings):
@@ -132,6 +133,77 @@ def test_pick_key_round_robin_skips_failing_keys():
         provider_settings.report_key(provider, "b", ok=False)
     assert [provider_settings.pick_key(provider) for _ in range(3)] == ["c", "a", "c"]
     assert provider_settings.pick_key(provider_settings.Provider(name="local")) == ""
+
+
+def test_concurrency_limit_is_a_provider_setting():
+    provider = configure("openai_compatible")
+    assert provider.max_concurrency == 3 and provider_settings.public_dict()["providers"][0]["max_concurrency"] == 3
+    provider_settings.update_provider(provider.id, {"max_concurrency": 2})
+    assert provider_settings.concurrency("chat") == 2
+    provider_settings.update_provider(provider.id, {"name": "Renamed", "max_concurrency": None})  # 不传就保留
+    assert provider_settings.concurrency("chat") == 2
+    for bad in (0, 17):
+        with pytest.raises(ValueError):
+            provider_settings.update_provider(provider.id, {"max_concurrency": bad})
+
+
+def run_together(target, count: int) -> None:
+    threads = [threading.Thread(target=target) for _ in range(count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+
+
+class Gauge:
+    """记录同时有几个请求在进行。"""
+
+    def __init__(self):
+        self.now = self.max = 0
+        self.lock = threading.Lock()
+
+    def __enter__(self):
+        with self.lock:
+            self.now += 1
+            self.max = max(self.max, self.now)
+
+    def __exit__(self, *exc):
+        with self.lock:
+            self.now -= 1
+
+
+def test_llm_and_image_requests_wait_for_a_slot(monkeypatch):
+    provider = configure("openai_compatible")
+    provider_settings.update_models({"image": {"provider_id": provider.id, "model": "gpt-image-1"}})
+    provider_settings.update_provider(provider.id, {"max_concurrency": 2})
+    gauge = Gauge()
+
+    def slow_stream(*args, **kwargs):
+        with gauge:
+            threading.Event().wait(0.05)  # time.sleep 被 fixture 换成了空操作
+            yield {"type": "text", "text": '{"answer": "ok"}'}
+            yield {"type": "message", "message": {"role": "model", "parts": [{"type": "text", "text": "ok"}]}}
+
+    monkeypatch.setattr(llm, "_stream_once", slow_stream)
+    run_together(lambda: llm.chat("chat", "", [{"role": "user", "parts": [{"type": "text", "text": "hi"}]}]), 5)
+    assert gauge.max == 2 and gauge.now == 0
+
+    class Answer(BaseModel):
+        answer: str
+
+    gauge.max = 0
+    run_together(lambda: llm.generate_json("chat", ["hi"], Answer), 5)
+    assert gauge.max == 2
+
+    def slow_image(*args, **kwargs):
+        with gauge:
+            threading.Event().wait(0.05)
+            return image.GeneratedImage(b"png", "image/png")
+
+    monkeypatch.setattr(image, "_openai_images", slow_image)
+    gauge.max = 0
+    run_together(lambda: image.generate("cat"), 5)
+    assert gauge.max == 2 and provider_settings.active_requests("image") == 0
 
 
 def test_base_url_normalization():

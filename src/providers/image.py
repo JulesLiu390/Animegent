@@ -66,28 +66,29 @@ def generate(
         if not ref.exists():
             raise FileNotFoundError(f"参考图片不存在: {ref}")
 
-    provider = endpoint.provider
-    last_error: Exception | None = None
-    delay = 2.0
-    for attempt in range(1, max_retries + 1):
-        key = provider_settings.pick_key(provider)
-        try:
-            if endpoint.format == "openai":
-                result = _openai_images(endpoint, key, prompt, refs, aspect_ratio, timeout)
-            else:
-                result = _gemini_image(endpoint, key, prompt, refs, timeout)
-            provider_settings.report_key(provider, key, ok=True)
-            return result
-        except Exception as exc:
-            last_error = exc
-            auth_error = isinstance(exc, ProviderHTTPError) and exc.is_auth_error
-            if (is_transient(exc) and not isinstance(exc, NoImageError)) or auth_error:
-                provider_settings.report_key(provider, key, ok=False)
-            if not (is_transient(exc) or (auth_error and len(provider.api_keys) > 1)) or attempt == max_retries:
-                break
-            logger.warning(f"[{provider.name} · {endpoint.model}] 图片生成重试 {attempt}/{max_retries}: {exc}")
-            time.sleep(delay)
-            delay = min(delay * 2, 30)
+    with provider_settings.request_slot(endpoint):  # 到了服务商的并发上限时排队
+        provider = endpoint.provider
+        last_error: Exception | None = None
+        delay = 2.0
+        for attempt in range(1, max_retries + 1):
+            key = provider_settings.pick_key(provider)
+            try:
+                if endpoint.format == "openai":
+                    result = _openai_images(endpoint, key, prompt, refs, aspect_ratio, timeout)
+                else:
+                    result = _gemini_image(endpoint, key, prompt, refs, timeout)
+                provider_settings.report_key(provider, key, ok=True)
+                return result
+            except Exception as exc:
+                last_error = exc
+                auth_error = isinstance(exc, ProviderHTTPError) and exc.is_auth_error
+                if (is_transient(exc) and not isinstance(exc, NoImageError)) or auth_error:
+                    provider_settings.report_key(provider, key, ok=False)
+                if not (is_transient(exc) or (auth_error and len(provider.api_keys) > 1)) or attempt == max_retries:
+                    break
+                logger.warning(f"[{provider.name} · {endpoint.model}] 图片生成重试 {attempt}/{max_retries}: {exc}")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
     raise RuntimeError(f"[{provider.name} · {endpoint.model}] 图片生成失败: {last_error}") from last_error
 
 

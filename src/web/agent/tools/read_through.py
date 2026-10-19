@@ -3,6 +3,7 @@
 - 草稿连读：每份草稿的标题、版式和画面指令按顺序排好，模型照着「画面指令」想象读者看到的页面。
 - 成图连读：一组条漫图片按顺序发过去；同时传了草稿时，草稿放在最后，只用来判断问题的根在草稿还是成图。
 - 总剧本的节奏表和每条的读者须知放在材料最后：先冷读、复述，再对照。
+- 分组读的时候，后一组可以带上前情（previously，通常是上一组复述的故事）放在最前面：读者是从头读下来的，前面交代过的不再报成问题。
 单独调用一次模型，主对话只收到结论和问题清单。
 """
 
@@ -22,7 +23,7 @@ from .drafts import (
     _STRIP_TITLE,
     DIRECTIONS,
     LAYOUT,
-    _draft_index,
+    draft_index,
     _headings,
     draft_meta,
     section,
@@ -78,7 +79,7 @@ def read_through(args: dict, ctx: ToolContext) -> dict:
     if not drafts and not strips:
         return {"error": "drafts（分镜草稿）和 strips（成图）至少传一组，按阅读顺序排好"}
     if max(len(drafts), len(strips)) > MAX_STRIPS:
-        return {"error": f"一次最多连读 {MAX_STRIPS} 条，分成几组读（每组和上一组重叠一条）"}
+        return {"error": f"一次最多连读 {MAX_STRIPS} 条，分成几组读（每组和上一组重叠一条，后一组把上一组复述的故事传进 previously）"}
     for path in [*drafts, *strips]:
         if not path.is_file():
             return {"error": f"文件不存在: {path}"}
@@ -99,6 +100,12 @@ def read_through(args: dict, ctx: ToolContext) -> dict:
 
     parts: list[dict] = []
     items: list[dict] = []
+    previously = str(args.get("previously") or "").strip()
+    if previously:
+        parts.append({"type": "text", "text": (
+            f"前情：读者是从头读下来的，读到这一组之前已经知道这些：\n{previously}\n"
+            "前情里交代过的人物、称呼和事情，这一组不用再交代，不要报成问题；这一组里第一次出现的照样要检查。"
+        )})
     if strips:
         parts.append({"type": "text", "text": f"成图连读：下面是按顺序排好的 {len(strips)} 条条漫，先只看图，像第一次看的读者那样读下去。"})
         for i, path in enumerate(strips, start=1):
@@ -129,7 +136,7 @@ def read_through(args: dict, ctx: ToolContext) -> dict:
         rhythm = section(script[:first], ("节奏表",)) or ""
         familiar = [
             f"第 {i} 条：{f}" for i, text in enumerate(texts, start=1)
-            if (f := _familiar(script, _draft_index(text, drafts[i - 1])))
+            if (f := _familiar(script, draft_index(text, drafts[i - 1])))
         ]
         if rhythm:
             tail += f"复述完以后再对照总剧本的节奏表：\n{rhythm}\n\n"
@@ -155,13 +162,15 @@ register(
             "连读：把一组条漫按顺序连起来读一遍，以第一次看的读者身份复述读到的故事，找出跨条的问题"
             "（人物有没有交代、称呼说法有没有解释、时间和回忆的切换跟不跟得上、节奏和版式有没有重复），"
             "并指出根在总剧本、草稿还是成图。一组分镜草稿写完、生成之前传 drafts；一组条漫生成完以后传 strips"
-            "（可以同时传 drafts，用来判断根在哪）。单独调用一次模型，只返回结论和问题清单。按 read-through 技能来。"
+            "（可以同时传 drafts，用来判断根在哪）。一次最多 12 条，长的作品分组读，组和组之间重叠一条，"
+            "后一组把上一组复述的故事传进 previously。单独调用一次模型，只返回结论和问题清单。按 read-through 技能来。"
         ),
         parameters=obj(
             {
                 "drafts": array(string("分镜草稿路径"), "分镜草稿，按阅读顺序"),
                 "strips": array(string("条漫图片路径"), "生成好的条漫，按阅读顺序"),
                 "script_path": string("可选：总剧本路径；不传就用第一份草稿记录的总剧本"),
+                "previously": string("可选：分组连读时，读者在这一组之前已经读到的内容，一般传上一组连读复述的故事"),
                 "notes": string("可选：这次特别要看的地方"),
             },
         ),

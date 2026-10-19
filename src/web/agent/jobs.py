@@ -3,7 +3,8 @@
 生成类工具（图片 / 视频）调用后立即返回 job_id，真正的生成在这里的后台线程里跑，状态和结果写进数据库：
 - 模型用 check_jobs 查询或等待结果
 - 前端在对话流里收到 job 事件；流结束后轮询 /api/conversations/{id}/jobs
-同一用途同时执行的任务数按该用途的 API Key 数量限制，其余的排队。
+同一用途同时执行的任务数按服务商设置的并发上限（默认 3），其余的排队。
+check_jobs 可以等全部结束（until="all"），也可以等其中任何一个结束就返回（until="any"），先处理好了的那个。
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ class JobManager:
         self._cond = threading.Condition()
         self._running: dict[str, int] = defaultdict(int)
         self._listeners: dict[str, list[Callable[[dict], None]]] = defaultdict(list)
+        # 已经通过 check_jobs 把结果交给模型的任务（until="any" 只等还没交过结果的）
+        self._delivered: dict[str, set[str]] = defaultdict(set)
 
     def recover(self) -> None:
         """服务启动时调用：上次退出时还没跑完的任务都已中断。"""
@@ -105,9 +108,14 @@ class JobManager:
     # ---- 查询 / 等待 ----
 
     def wait(self, conversation_id: str, job_ids: list[str] | None, *, turn_id: str | None, timeout: float,
-             cancel_event: threading.Event | None = None) -> list[dict]:
-        """等到这些任务全部结束或超时；用户停止时抛出 Cancelled。不指定 job_ids 时：这一轮发起的任务 + 所有还没结束的任务。"""
+             cancel_event: threading.Event | None = None, until: str = "all") -> list[dict]:
+        """等到这些任务全部结束或超时；用户停止时抛出 Cancelled。
+
+        until="any"：有一个任务结束、而且它的结果还没交给过模型，就返回。
+        不指定 job_ids 时：这一轮发起的任务 + 所有还没结束的任务。
+        """
         deadline = time.monotonic() + timeout
+        waiting: set[str] | None = None  # 开始等时还没结束的任务
         while True:
             if cancel_event and cancel_event.is_set():
                 raise Cancelled()
@@ -115,11 +123,27 @@ class JobManager:
                 rows = self.db.list_jobs(conversation_id, ids=job_ids)
             else:
                 rows = self.db.list_jobs(conversation_id, turn_id=turn_id, unfinished=True)
+                # 别的轮次发起的任务结束后不在上面的列表里了，单独查回来，才知道它结束了
+                missing = sorted((waiting or set()) - {r["id"] for r in rows})
+                if missing:
+                    rows += self.db.list_jobs(conversation_id, ids=missing)
+            if waiting is None:
+                waiting = {r["id"] for r in rows if r["status"] not in FINISHED}
             remaining = deadline - time.monotonic()
-            if all(r["status"] in FINISHED for r in rows) or remaining <= 0:
+            done = all(r["status"] in FINISHED for r in rows)
+            if until == "any":
+                with self._cond:
+                    delivered = self._delivered[conversation_id]
+                    done = done or any(r["status"] in FINISHED and r["id"] not in delivered for r in rows)
+            if done or not waiting or remaining <= 0:
                 return rows
             with self._cond:
                 self._cond.wait(min(remaining, 0.5))
+
+    def deliver(self, conversation_id: str, rows: list[dict]) -> None:
+        """把任务状态交给模型，记下哪些任务的结果已经交过了。"""
+        with self._cond:
+            self._delivered[conversation_id].update(r["id"] for r in rows if r["status"] in FINISHED)
 
     @staticmethod
     def report(rows: list[dict], requested: list[str] | None = None) -> dict:

@@ -408,6 +408,7 @@ export interface ProviderInfo {
   models: string[];
   key_count: number;
   key_previews: string[];  // API Key 只返回脱敏预览
+  max_concurrency: number;  // 同一种用途同时最多几个请求
 }
 
 export interface ModelAssignment {
@@ -430,6 +431,7 @@ export interface ProviderInput {
   base_url: string;
   api_keys: string[] | null;  // null：保留已保存的 Key
   models: string[];
+  max_concurrency: number;
 }
 
 export interface ProviderProbe {

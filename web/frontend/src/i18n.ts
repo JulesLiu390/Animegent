@@ -222,6 +222,7 @@ const translations: Record<string, Record<Lang, string>> = {
   "tool.name.skill_read_resource": { zh: "读取技能资料", en: "Read skill file" },
   "tool.name.review_comic_strip": { zh: "检查条漫", en: "Review strip" },
   "tool.name.fix_comic_strip": { zh: "修图", en: "Fix strip" },
+  "tool.name.fix_comic_text": { zh: "改字", en: "Fix text" },
   "tool.name.read_through": { zh: "连读", en: "Read through" },
 
   "tool.status.detect_faces_in_image": { zh: "正在检测人脸", en: "Detecting faces" },
@@ -245,6 +246,7 @@ const translations: Record<string, Record<Lang, string>> = {
   "tool.status.skill_read_resource": { zh: "正在读取技能资料", en: "Reading skill file" },
   "tool.status.review_comic_strip": { zh: "正在检查条漫", en: "Reviewing strip" },
   "tool.status.fix_comic_strip": { zh: "正在修图", en: "Fixing strip" },
+  "tool.status.fix_comic_text": { zh: "正在改字", en: "Fixing text" },
   "tool.status.read_through": { zh: "正在连读", en: "Reading through" },
   "tool.status.check_jobs": { zh: "正在等待生成完成", en: "Waiting for results" },
   "tool.status.default": { zh: "正在处理", en: "Working" },
@@ -389,6 +391,11 @@ const translations: Record<string, Record<Lang, string>> = {
   "settings.formatGemini": { zh: "Google Gemini", en: "Google Gemini" },
   "settings.formatAnthropic": { zh: "Anthropic", en: "Anthropic" },
   "settings.baseUrl": { zh: "Base URL", en: "Base URL" },
+  "settings.concurrency": { zh: "同时请求数", en: "Concurrent requests" },
+  "settings.concurrencyHint": {
+    zh: "同一种用途（对话、看图、生图、视频）最多同时发几个请求，多的排队。代理经常超时或报错时调小。",
+    en: "How many requests of one kind (chat, vision, image, video) may run at once; the rest wait. Lower it if the proxy times out or errors.",
+  },
   "settings.preset": { zh: "常用地址…", en: "Presets…" },
   "settings.name": { zh: "名称", en: "Name" },
   "settings.models": { zh: "可选模型", en: "Models" },

@@ -44,6 +44,7 @@ interface FixRequest {
   panel?: number;
   area?: string;
   text?: string;
+  current?: string;
   instruction?: string;
 }
 
@@ -54,7 +55,7 @@ function requestText(step: Step, t: Translate): string {
     const fixes = (Array.isArray(args.fixes) ? args.fixes : []) as FixRequest[];
     const lines = fixes.map((f, i) => {
       const where = [f.panel ? t("review.panel", { index: f.panel }) : "", f.area ? String(f.area).toUpperCase() : ""].filter(Boolean).join(" · ");
-      return `${i + 1}. ${where ? `${where}：` : ""}${f.instruction || ""}${f.text ? ` 「${f.text}」` : ""}`;
+      return `${i + 1}. ${where ? `${where}：` : ""}${f.current ? `${f.current} → ` : ""}${f.instruction || ""}${f.text ? ` 「${f.text}」` : ""}`;
     });
     if (args.layout_path) lines.unshift(t("tool.fixLayout"));
     return lines.join("\n");

@@ -102,3 +102,12 @@ def test_read_through_reports_bad_requests(project, monkeypatch):
     assert "文件不存在" in run(project, strips=["output/panels/none.png"])["error"]
     assert "最多连读" in run(project, strips=STRIPS * (read_through.MAX_STRIPS // 2 + 1))["error"]
     assert calls == []
+
+
+def test_later_groups_carry_what_the_reader_already_knows(project, monkeypatch):
+    calls = fake_model(monkeypatch, {"story": "x", "verdict": "pass", "issues": []})
+    run(project, strips=STRIPS, previously="小樱是转学生，在等她哥哥。")
+    texts = [p["text"] for p in calls[0]["parts"] if p["type"] == "text"]
+    assert texts[0].startswith("前情") and "小樱是转学生，在等她哥哥。" in texts[0]  # 前情在最前面，图在后面
+    assert texts[1].startswith("成图连读")
+    assert "previously" in base.get("read_through").description

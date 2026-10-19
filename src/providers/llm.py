@@ -69,10 +69,11 @@ def stream_chat(
     还没输出任何内容时遇到网络错误、限流或 5xx，会换一个 Key 重试。
     """
     endpoint = provider_settings.resolve(role, model)
-    yield from _with_retries(
-        endpoint, max_retries,
-        lambda key: _stream_once(endpoint, key, system, messages, tools, None, timeout),
-    )
+    with provider_settings.request_slot(endpoint):  # 到了服务商的并发上限时排队
+        yield from _with_retries(
+            endpoint, max_retries,
+            lambda key: _stream_once(endpoint, key, system, messages, tools, None, timeout),
+        )
 
 
 def chat(
@@ -112,41 +113,42 @@ def generate_json(
     system_text = f"{system}\n\n{instruction}" if system else instruction
     messages = [{"role": "user", "parts": [{"type": "text", "text": p} if isinstance(p, str) else p for p in parts]}]
 
-    provider = endpoint.provider
-    json_mode = True  # OpenAI 的 response_format / Gemini 的 responseSchema
-    last_error: Exception | None = None
-    delay = 2.0
-    for attempt in range(1, max_retries + 1):
-        key = provider_settings.pick_key(provider)
-        try:
-            text = "".join(
-                event["text"]
-                for event in _stream_once(endpoint, key, system_text, messages, None, json_schema, timeout, json_mode)
-                if event["type"] == "text"
-            )
-            result = schema.model_validate(parse_json_text(text))
-            provider_settings.report_key(provider, key, ok=True)
-            return result
-        except ProviderHTTPError as exc:
-            last_error = exc
-            if exc.status in (400, 422) and json_mode and endpoint.format != "anthropic_native":
-                json_mode = False  # 部分兼容接口不支持结构化输出参数，退回只靠提示词约束
-                continue
-            if exc.retryable or exc.is_auth_error:
+    with provider_settings.request_slot(endpoint):  # 到了服务商的并发上限时排队
+        provider = endpoint.provider
+        json_mode = True  # OpenAI 的 response_format / Gemini 的 responseSchema
+        last_error: Exception | None = None
+        delay = 2.0
+        for attempt in range(1, max_retries + 1):
+            key = provider_settings.pick_key(provider)
+            try:
+                text = "".join(
+                    event["text"]
+                    for event in _stream_once(endpoint, key, system_text, messages, None, json_schema, timeout, json_mode)
+                    if event["type"] == "text"
+                )
+                result = schema.model_validate(parse_json_text(text))
+                provider_settings.report_key(provider, key, ok=True)
+                return result
+            except ProviderHTTPError as exc:
+                last_error = exc
+                if exc.status in (400, 422) and json_mode and endpoint.format != "anthropic_native":
+                    json_mode = False  # 部分兼容接口不支持结构化输出参数，退回只靠提示词约束
+                    continue
+                if exc.retryable or exc.is_auth_error:
+                    provider_settings.report_key(provider, key, ok=False)
+                if not (exc.retryable or (exc.is_auth_error and len(provider.api_keys) > 1)):
+                    break
+            except (json.JSONDecodeError, ValidationError) as exc:
+                last_error = exc  # 模型输出的 JSON 不合格，重试
+            except Exception as exc:
+                last_error = exc
+                if not is_transient(exc):
+                    break
                 provider_settings.report_key(provider, key, ok=False)
-            if not (exc.retryable or (exc.is_auth_error and len(provider.api_keys) > 1)):
-                break
-        except (json.JSONDecodeError, ValidationError) as exc:
-            last_error = exc  # 模型输出的 JSON 不合格，重试
-        except Exception as exc:
-            last_error = exc
-            if not is_transient(exc):
-                break
-            provider_settings.report_key(provider, key, ok=False)
-        if attempt < max_retries:
-            logger.warning(f"[{provider.name} · {endpoint.model}] 结构化输出重试 {attempt}/{max_retries}: {last_error}")
-            time.sleep(delay)
-            delay = min(delay * 2, 30)
+            if attempt < max_retries:
+                logger.warning(f"[{provider.name} · {endpoint.model}] 结构化输出重试 {attempt}/{max_retries}: {last_error}")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
     raise ProviderError(f"[{provider.name} · {endpoint.model}] 结构化输出失败: {last_error}") from last_error
 
 

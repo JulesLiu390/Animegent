@@ -473,6 +473,7 @@ class ProviderIn(BaseModel):
     base_url: str = ""
     api_keys: list[str] | None = None  # None：保留已保存的 Key
     models: list[str] = []
+    max_concurrency: int | None = None  # None：新建时用默认值（3），修改时保留原来的
 
 
 class ModelAssignmentIn(BaseModel):

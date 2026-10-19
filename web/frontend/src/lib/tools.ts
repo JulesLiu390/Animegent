@@ -22,6 +22,7 @@ export const TOOL_ICONS: Record<string, IconName> = {
   skill_read_resource: "lightbulb",
   review_comic_strip: "list-checks",
   fix_comic_strip: "sparkles",
+  fix_comic_text: "pencil",
   read_through: "book",
   write_script: "file-pen",
   update_script: "file-pen",
@@ -70,6 +71,11 @@ export function toolSummary(step: Step, t: T): string {
       return [
         args.strip_index != null ? t("tool.stripIndex", { index: String(args.strip_index) }) : "",
         typeof result.panels === "number" && result.panels > 0 ? t("tool.panelCount", { count: result.panels }) : "",
+      ].filter(Boolean).join(" · ");
+    case "fix_comic_text":
+      return [
+        fileName(str(args.image_path)),
+        Array.isArray(args.fixes) && args.fixes.length > 0 ? t("tool.fixCount", { count: args.fixes.length }) : "",
       ].filter(Boolean).join(" · ");
     case "fix_comic_strip":
       return [

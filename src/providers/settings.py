@@ -16,6 +16,9 @@ from __future__ import annotations
 import os
 import threading
 import uuid
+from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -34,6 +37,8 @@ ROLE_FORMATS = {
     "video": ("unified", "openai", "gemini"),
 }
 ROLE_LABELS = {"chat": "对话模型", "vision": "视觉模型", "image": "图片生成模型", "video": "视频生成模型"}
+DEFAULT_CONCURRENCY = 3  # 每个服务商、每种用途默认最多同时几个请求
+MAX_CONCURRENCY = 16
 
 # 旧版 .env 配置下代码里写死的模型
 _LEGACY_MODELS = [
@@ -54,6 +59,8 @@ class Provider(BaseModel):
     base_url: str = ""
     api_keys: list[str] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
+    # 同一种用途（对话 / 看图 / 生图 / 视频）同时最多几个请求，多的排队；代理不稳定时调小
+    max_concurrency: int = Field(DEFAULT_CONCURRENCY, ge=1, le=MAX_CONCURRENCY)
 
 
 class ModelAssignment(BaseModel):
@@ -276,11 +283,45 @@ def default_format(role: str, provider: Provider) -> str:
 
 
 def concurrency(role: str) -> int:
-    """该用途可用的并发数：每个 Key 一路（与旧版按 Key 数量并发的行为一致）。"""
+    """该用途同时最多几个请求：服务商设置里的并发上限（默认 3）。"""
     try:
-        return max(1, len(resolve(role).provider.api_keys))
+        return resolve(role).provider.max_concurrency
     except NotConfiguredError:
         return 1
+
+
+# ========== 并发上限 ==========
+# 同一服务商、同一用途正在进行的请求数到了上限，新的请求在这里排队（后台生图任务另外在 JobManager 里排队，界面上看得到）。
+
+_slot_cond = threading.Condition()
+_active: dict[tuple[str, str], int] = defaultdict(int)
+
+
+@contextmanager
+def request_slot(endpoint: Endpoint) -> Iterator[None]:
+    """占一个请求名额，用完归还。"""
+    key = (endpoint.provider.id, endpoint.role)
+    limit = max(1, endpoint.provider.max_concurrency)
+    with _slot_cond:
+        while _active[key] >= limit:
+            _slot_cond.wait(1.0)
+        _active[key] += 1
+    try:
+        yield
+    finally:
+        with _slot_cond:
+            _active[key] -= 1
+            _slot_cond.notify_all()
+
+
+def active_requests(role: str) -> int:
+    """这一用途当前服务商正在进行的请求数（测试和排查用）。"""
+    try:
+        endpoint = resolve(role)
+    except NotConfiguredError:
+        return 0
+    with _slot_cond:
+        return _active[(endpoint.provider.id, endpoint.role)]
 
 
 # ========== API Key 轮询 ==========

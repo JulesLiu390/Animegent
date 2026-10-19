@@ -4,7 +4,7 @@
   然后像编辑看ネーム一样，带着草图把草稿检查、改一遍。这几步都在工具里完成，主对话只收到摘要和草图，
   二十几条的草稿不会堆进主对话的历史。
 - review_comic_strip：生成的条漫对照分镜草稿检查，返回问题清单。
-- generate_comic_strip 传 draft_path 时，用这里的函数读出「画面指令」、版式草图和总剧本的「画面总则」。
+- generate_comic_strip 传 draft_path 时，用这里的函数读出「画面指令」、版式草图和总剧本的「画面总则」「服装表」。
 
 写法、格式和检查清单来自技能 strip-draft、layout-sketch、strip-review（见 strip_guide.py 和 skills.py）。
 
@@ -44,6 +44,8 @@ LAYOUT = ("版式", "Layout")
 CHECK = ("自检", "Self-check")
 DIRECTIONS = ("画面指令", "Panel directions")
 VISUAL_RULES = ("画面总则", "Visual rules")
+COSTUMES = ("服装表", "Costumes")
+COSTUME_CHANGES = ("换装", "Changes")
 
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
 _FENCE = re.compile(r"^```.*?^```[^\n]*$", re.MULTILINE | re.DOTALL)
@@ -52,6 +54,7 @@ _PANEL_TITLE = re.compile(r"(?:第\s*0*(\d+)\s*格|panel\s*#?\s*0*(\d+)\b)", re.
 _META_LINE = re.compile(r"^>\s*(总剧本|Script|版式草图|Layout sketch)\s*[:：]\s*(\S.*?)\s*$", re.MULTILINE | re.IGNORECASE)
 _CODE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _ITEM = re.compile(r"^\s*[-*]\s+(.+?)\s*$", re.MULTILINE)
+_STRIP_RANGE = re.compile(r"(?:第\s*0*(\d+)\s*(?:[—–\-~～至到]\s*0*(\d+)\s*)?条|strips?\s*#?\s*0*(\d+)(?:\s*[—–\-~]\s*0*(\d+))?)", re.IGNORECASE)
 
 
 # ========== 解析：总剧本 / 分镜草稿 ==========
@@ -131,6 +134,59 @@ def _items(text: str | None) -> list[str]:
 
 def _after_colon(item: str) -> str:
     return re.split(r"[:：]", item, maxsplit=1)[-1].strip()
+
+
+@dataclass
+class Costumes:
+    """总剧本「服装表」：每个人平时穿什么（按角色名），以及哪几条要换衣服。"""
+
+    base: dict[str, str] = field(default_factory=dict)
+    changes: list[tuple[int, int, str, str]] = field(default_factory=list)  # (从第几条, 到第几条, 角色名, 整行)
+
+    def for_strip(self, n: int | None, names: list[str] | None = None) -> tuple[dict[str, str], list[str]]:
+        """这一条里各人平时的衣服，和这一条的换装（names 为空时是全部人）。"""
+        wanted = set(names or []) or None
+        base = {k: v for k, v in self.base.items() if wanted is None or k in wanted}
+        changes = [line for first, last, name, line in self.changes
+                   if n is not None and first <= n <= last and (wanted is None or name in wanted)]
+        return base, changes
+
+    def text(self, n: int | None, names: list[str] | None = None) -> str:
+        base, changes = self.for_strip(n, names)
+        lines = [f"- {name}：{costume}" for name, costume in base.items()]
+        if changes:
+            lines += ["这一条的换装（只有这些地方换，其余照上面）：", *(f"- {line}" for line in changes)]
+        return "\n".join(lines)
+
+
+def _name_and_costume(item: str) -> tuple[str, str]:
+    parts = re.split(r"[:：]", item, maxsplit=1)
+    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ("", "")
+
+
+def costumes(script: str) -> Costumes:
+    """读总剧本的「## 服装表」：「- 角色名：衣服」一人一行；「### 换装」下面「- 第14条第5—6格｜角色名：衣服（原因）」。"""
+    table = section(script, COSTUMES)
+    out = Costumes()
+    if not table:
+        return out
+    change_block = section(table, COSTUME_CHANGES) or ""
+    heads = _headings(table)
+    base_block = table[: heads[0][2]] if heads else table
+    for item in _items(base_block):
+        name, costume = _name_and_costume(item)
+        if name and costume:
+            out.base[name] = costume
+    for item in _items(change_block):
+        where, _, rest = item.partition("｜") if "｜" in item else item.partition("|")
+        m = _STRIP_RANGE.search(where)
+        name, costume = _name_and_costume(rest)
+        if not (m and name and costume):
+            continue
+        first = int(m.group(1) or m.group(3))
+        last = int(m.group(2) or m.group(4) or first)
+        out.changes.append((min(first, last), max(first, last), name, item))
+    return out
 
 
 def _clip(text: str, limit: int = 160) -> str:
@@ -315,6 +371,11 @@ def draft_strip(args: dict, ctx: ToolContext) -> dict:
             lang, "总剧本里没有「## 画面总则」一节：生成时只能附上 style.md，建议按 style.md 在总剧本里补上给生图模型看的画面总则",
             "The script has no \"## Visual rules\" section, so generation falls back to style.md; add one to the script",
         ))
+    if not section(script, COSTUMES):
+        warnings.append(strip_guide.text(
+            lang, "总剧本里没有「## 服装表」一节：每个人穿什么、哪几条换衣服没有定下来，各条的衣服颜色容易对不上，建议按 master-script 技能补上",
+            "The script has no \"## Costumes\" section, so clothes may drift between strips; add one (see the master-script skill)",
+        ))
     if sketch.error:
         warnings.append(strip_guide.text(lang, f"没有画出版式草图：{_clip(sketch.error, 300)}", f"No layout sketch: {_clip(sketch.error, 300)}"))
 
@@ -372,7 +433,7 @@ VERDICTS = ("pass", "minor", "redo")
 ACTIONS = ("修图", "重画这一格", "整条重画", "不用改")
 
 
-def _draft_index(draft: str, path: Path) -> int | None:
+def draft_index(draft: str, path: Path) -> int | None:
     """草稿是第几条：先看标题（# 第3条 分镜草稿），再看文件名（strip_3.md）。"""
     title = next((t for level, t, _, _ in _headings(draft) if level == 1), "")
     m = _STRIP_TITLE.search(title)
@@ -382,15 +443,19 @@ def _draft_index(draft: str, path: Path) -> int | None:
     return int(digits[-1]) if digits else None
 
 
-def _script_sections(draft: str, draft_path: Path, ctx: ToolContext) -> tuple[str, str]:
-    """草稿记录的总剧本里，这一条和上一条的原文（检查时对照情节点和读者须知）。"""
+def _script_sections(draft: str, draft_path: Path, ctx: ToolContext, names: list[str]) -> tuple[str, str, str]:
+    """草稿记录的总剧本里，这一条和上一条的原文（检查时对照情节点和读者须知），以及服装表里这一条该穿什么。"""
     ref = draft_meta(draft).get("script")
     if not ref:
-        return "", ""
+        return "", "", ""
     script = Path(ref) if Path(ref).is_absolute() else (ctx.project_dir / ref if ctx.project_dir else Path(ref))
-    n = _draft_index(draft, draft_path)
-    found = strip_context(script.read_text(encoding="utf-8"), n) if n and script.is_file() else None
-    return (found.current, found.previous) if found else ("", "")
+    if not script.is_file():
+        return "", "", ""
+    text = script.read_text(encoding="utf-8")
+    n = draft_index(draft, draft_path)
+    found = strip_context(text, n) if n else None
+    worn = costumes(text).text(n, names)
+    return (found.current, found.previous, worn) if found else ("", "", worn)
 
 
 def review_comic_strip(args: dict, ctx: ToolContext) -> dict:
@@ -403,6 +468,11 @@ def review_comic_strip(args: dict, ctx: ToolContext) -> dict:
         return {"error": f"分镜草稿不存在: {args['draft_path']}"}
     if previous and not previous.is_file():
         return {"error": f"上一条的条漫不存在: {args['previous_strip_path']}"}
+    char_paths = [str(p) for p in args.get("character_paths") or [] if str(p).strip()]
+    char_names = [str(x) for x in args.get("character_names") or [] if str(x).strip()]
+    for cp in char_paths:
+        if not Path(cp).is_file():
+            return {"error": f"角色图不存在: {cp}"}
     draft = draft_path.read_text(encoding="utf-8")
     directions = section(draft, DIRECTIONS)
     if not directions:
@@ -425,9 +495,16 @@ def review_comic_strip(args: dict, ctx: ToolContext) -> dict:
         n = sum(1 for p in parts if p["type"] == "image") + 1
         parts += [{"type": "text", "text": strip_guide.text(ctx.lang, f"图 {n}：上一条的成图（检查衔接用）", f"Image {n}: the previous strip (for the transition)")},
                   image_part(previous)]
-    current, before = _script_sections(draft, draft_path, ctx)
+    # 角色图：长相和衣服以它为准（和服装表一起，查衣服颜色有没有变）
+    for i, cp in enumerate(char_paths):
+        n = sum(1 for p in parts if p["type"] == "image") + 1
+        name = char_names[i] if i < len(char_names) else Path(cp).stem
+        parts += [{"type": "text", "text": strip_guide.text(ctx.lang, f"图 {n}：角色 {name}（长相和衣服以这张为准）",
+                                                          f"Image {n}: character {name} (face and clothes)")}, image_part(cp)]
+    current, before, worn = _script_sections(draft, draft_path, ctx, char_names)
     parts.append({"type": "text", "text": strip_guide.strip_review_request(
         section(draft, LAYOUT) or "", directions, ctx.lang, script_current=current, script_previous=before, has_previous=previous is not None,
+        costumes=worn, has_characters=bool(char_paths),
     )})
     try:
         system = strip_guide.strip_review_system(ctx.lang, ctx.project_dir)
@@ -476,6 +553,7 @@ register(
             "返回结论（pass 可以用 / minor 小问题 / redo 建议重画）和问题清单：每个问题有第几格、方格坐标（area）、"
             "修法（action：修图 / 重画这一格 / 整条重画 / 不用改）和具体怎么改（fix）。"
             "会先以第一次看的读者身份冷读，报出读不懂的地方（kind「读不懂」）；传了 previous_strip_path 时一起检查和上一条的衔接。"
+            "传 character_paths / character_names（和生成时一样）时，对照角色图和总剧本「服装表」查长相和衣服颜色。"
             "条漫生成完（check_jobs 拿到结果）、修图之后都调用；接下来怎么做见 strip-fix 技能。"
         ),
         parameters=obj(
@@ -483,6 +561,8 @@ register(
                 "strip_path": string("生成的条漫图片路径"),
                 "draft_path": string("这一条的分镜草稿路径"),
                 "previous_strip_path": string("可选：上一条的成图，用来检查和上一条接不接得上"),
+                "character_paths": array(string("角色图片路径"), "可选：这一条出场角色的角色图（和生成时传的一样），用来查长相和衣服"),
+                "character_names": array(string("角色名"), "可选：和 character_paths 一一对应的角色名；也用来从服装表里找这些人该穿什么"),
             },
             ["strip_path", "draft_path"],
         ),

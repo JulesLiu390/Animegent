@@ -109,7 +109,7 @@ def strip_review_system(lang: str, project_dir: Path | None) -> str:
 
 
 def strip_review_request(layout: str, directions: str, lang: str, *, script_current: str = "", script_previous: str = "",
-                         has_previous: bool = False) -> str:
+                         has_previous: bool = False, costumes: str = "", has_characters: bool = False) -> str:
     cold = (
         "先冷读：不看下面的分镜草稿，只看图 1" + ("和上一条的成图" if has_previous else "")
         + "，以第一次看的读者身份判断读不读得懂，再对照「总剧本里这一条」的读者须知。然后才对照草稿检查画得对不对。\n\n"
@@ -118,8 +118,11 @@ def strip_review_request(layout: str, directions: str, lang: str, *, script_curr
         cold
         + _block("总剧本里的上一条", script_previous)
         + _block("总剧本里这一条（对照其中的读者须知）", script_current)
+        + _block("总剧本「服装表」：这一条的人该穿什么", costumes)
         + _block("分镜草稿的「版式」", layout)
         + _block("分镜草稿的「画面指令」", directions)
         + "对照上面的草稿检查图 1 的条漫。图 2 是叠了坐标方格的同一张图，说位置时用它的方格坐标；有图 3 时，图 3 是这一条的版式草图。"
-        "每个问题写出第几格、方格坐标、修法和具体怎么改。"
+        + ("对照后面附的角色图和上面的服装表，查每个人的长相、衣服款式和颜色。" if has_characters
+           else "对照上面的服装表，查每个人的衣服款式和颜色。" if costumes.strip() else "")
+        + "每个问题写出第几格、方格坐标、修法和具体怎么改。"
     )

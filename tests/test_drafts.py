@@ -18,6 +18,13 @@ SCRIPT = """\
 ## 企画
 - 一句话：夏天的晚饭
 
+## 服装表
+- 奶奶：灰绿短袖上衣、米白碎花围裙
+- 爹爹：米色短袖衬衫、深灰长裤
+### 换装
+- 第2条第2格｜奶奶：围裙换成蓝色（端菜前换的）
+- 第5—6条｜爹爹：深蓝外套（入秋）
+
 ## 画面总则
 - 清淡配色，细腻线条
 - 圆形对白框，方形旁白框
@@ -161,6 +168,15 @@ def test_sections_stop_at_the_next_heading_of_the_same_level():
     assert drafts.section(draft, ("没有这一节",)) is None
 
 
+def test_costume_table_lists_clothes_and_planned_changes():
+    table = drafts.costumes(SCRIPT)
+    assert table.base == {"奶奶": "灰绿短袖上衣、米白碎花围裙", "爹爹": "米色短袖衬衫、深灰长裤"}
+    assert table.for_strip(2, ["奶奶"]) == ({"奶奶": "灰绿短袖上衣、米白碎花围裙"}, ["第2条第2格｜奶奶：围裙换成蓝色（端菜前换的）"])
+    assert table.for_strip(6)[1] == ["第5—6条｜爹爹：深蓝外套（入秋）"] and table.for_strip(3)[1] == []
+    assert "这一条的换装" in table.text(2) and "这一条的换装" not in table.text(3)
+    assert drafts.costumes("# 没有服装表\n## 企画\n").base == {}
+
+
 def test_split_reply_separates_the_layout_code():
     draft, code = drafts.split_reply(draft_reply())
     assert draft.startswith("# 第2条 分镜草稿") and "```" not in draft  # 标题前的客套话也去掉了
@@ -205,6 +221,14 @@ def test_draft_strip_drafts_sketches_checks_and_saves(project, monkeypatch):
     review = fake.requests[1]["messages"]
     assert [m["role"] for m in review] == ["user", "model", "user"]
     assert "ネーム" in review[2]["parts"][0]["text"] and review[2]["parts"][1]["type"] == "image"
+
+
+def test_draft_strip_warns_without_a_costume_table(project, monkeypatch):
+    monkeypatch.setattr(llm, "stream_chat", FakeStream([draft_reply(), REVISED]))
+    fake_sandbox(monkeypatch)
+    (project / "output" / "scripts" / "story.md").write_text(SCRIPT.replace("## 服装表", "## 衣服"), encoding="utf-8")
+    result = run_tool("draft_strip", DRAFT_ARGS, project)
+    assert any("服装表" in w for w in result["warnings"])
 
 
 def test_draft_strip_feeds_code_errors_back(project, monkeypatch):
@@ -317,12 +341,18 @@ def test_comic_strip_draws_from_the_draft(project, monkeypatch):
     assert "clearly different from every reference character" in prompt and "Do not add any other text" in prompt
     assert "Vary camera angles" not in prompt and "at least 2 panels" not in prompt
     assert "from the visual rules of the master script" in prompt and "藤井树" not in prompt
+    # 服装表：角色图旁边写上衣服，这一条的换装另列
+    assert "Image 1: Character 奶奶, wearing: 灰绿短袖上衣、米白碎花围裙" in prompt
+    assert "wear the clothes written next to their image" in prompt and "unless a panel direction says otherwise" not in prompt
+    assert "COSTUME CHANGES IN THIS STRIP (only these):\n- 第2条第2格｜奶奶：围裙换成蓝色（端菜前换的）" in prompt
+    assert "深蓝外套" not in prompt  # 别的条的换装不发
 
     # 总剧本没有画面总则：附上项目的 style.md
     story = project / "output" / "scripts" / "story.md"
-    story.write_text(SCRIPT.replace("## 画面总则", "## 别的"), encoding="utf-8")
+    story.write_text(SCRIPT.replace("## 画面总则", "## 别的").replace("## 服装表", "## 不是服装表"), encoding="utf-8")
     run_tool("generate_comic_strip", args, project)
     assert "from the project's style guide" in captured["prompt"] and "藤井树的画风" in captured["prompt"]
+    assert "Image 1: Character 奶奶\n" in captured["prompt"] and "unless a panel direction says otherwise" in captured["prompt"]  # 没有服装表：照角色图
     story.write_text(SCRIPT, encoding="utf-8")
 
     # 草稿没有记录草图：按画面指令里的格数
@@ -403,3 +433,31 @@ def test_review_reads_cold_and_checks_the_transition(project, monkeypatch):
     assert "【总剧本里这一条（对照其中的读者须知）】\n## 第2条｜门口的晚饭" in request  # 草稿记录的总剧本里的这一条
     assert "【总剧本里的上一条】\n## 第01条｜离南京近" in request
     assert "上一条的条漫不存在" in run_tool("review_comic_strip", {**args, "previous_strip_path": "output/panels/none.png"}, project)["error"]
+
+
+def test_review_checks_faces_and_clothes_against_the_characters(project, monkeypatch):
+    calls: list[dict] = []
+
+    def generate_json(role, parts, schema, **kwargs):
+        calls.append({"parts": parts})
+        return schema.model_validate({"verdict": "pass", "problems": []})
+
+    monkeypatch.setattr(llm, "generate_json", generate_json)
+    panels = project / "output" / "panels"
+    panels.mkdir(parents=True)
+    Image.new("RGB", (90, 160), "white").save(panels / "strip_2.png")
+    character = project / "output" / "stylized" / "grandma.png"
+    character.parent.mkdir(parents=True)
+    Image.new("RGB", (90, 160), "green").save(character)
+    args = {"strip_path": "output/panels/strip_2.png", "draft_path": write_draft(project),
+            "character_paths": ["output/stylized/grandma.png"], "character_names": ["奶奶"]}
+
+    run_tool("review_comic_strip", args, project)
+    parts = calls[0]["parts"]
+    assert [p for p in parts if p["type"] == "image"][-1]["path"] == str(character)
+    assert "图 4：角色 奶奶（长相和衣服以这张为准）" in [p["text"] for p in parts if p["type"] == "text"]
+    request = parts[-1]["text"]
+    assert "【总剧本「服装表」：这一条的人该穿什么】\n- 奶奶：灰绿短袖上衣、米白碎花围裙" in request
+    assert "围裙换成蓝色" in request and "爹爹" not in request.split("【总剧本「服装表」")[1].split("【")[0]  # 只列这一条的人
+    assert "对照后面附的角色图和上面的服装表" in request
+    assert "角色图不存在" in run_tool("review_comic_strip", {**args, "character_paths": ["output/stylized/none.png"]}, project)["error"]

@@ -60,19 +60,20 @@ def generate_video(
         if not img.startswith(("http://", "https://")) and not Path(img).exists():
             raise FileNotFoundError(f"图片不存在: {img}")
 
-    key = provider_settings.pick_key(endpoint.provider)
-    try:
-        if endpoint.format == "openai":
-            path = _sora(endpoint, key, prompt, images, aspect_ratio, out, poll_interval, timeout)
-        elif endpoint.format == "gemini":
-            path = _veo(endpoint, key, prompt, images, aspect_ratio, out, poll_interval, timeout)
-        else:
-            path = _unified(endpoint, key, prompt, images, aspect_ratio, out, poll_interval, timeout)
-    except Exception as exc:
-        if is_transient(exc):
-            provider_settings.report_key(endpoint.provider, key, ok=False)
-        exc.args = (f"[{endpoint.provider.name} · {endpoint.model}] {exc}",)
-        raise
+    with provider_settings.request_slot(endpoint):  # 到了服务商的并发上限时排队
+        key = provider_settings.pick_key(endpoint.provider)
+        try:
+            if endpoint.format == "openai":
+                path = _sora(endpoint, key, prompt, images, aspect_ratio, out, poll_interval, timeout)
+            elif endpoint.format == "gemini":
+                path = _veo(endpoint, key, prompt, images, aspect_ratio, out, poll_interval, timeout)
+            else:
+                path = _unified(endpoint, key, prompt, images, aspect_ratio, out, poll_interval, timeout)
+        except Exception as exc:
+            if is_transient(exc):
+                provider_settings.report_key(endpoint.provider, key, ok=False)
+            exc.args = (f"[{endpoint.provider.name} · {endpoint.model}] {exc}",)
+            raise
     provider_settings.report_key(endpoint.provider, key, ok=True)
     logger.info(f"视频已保存: {path}")
     return path

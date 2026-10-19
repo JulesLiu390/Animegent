@@ -271,7 +271,7 @@ def test_auto_mode_runs_generation_without_approval(env, monkeypatch):
     send(env, "画三张", interaction="auto")
     turn = last_turn(env)
     assert turn["status"] == "completed" and len(calls) == 3
-    assert active["max"] <= 2  # 并发数按 Key 数量限制（这里是 2）
+    assert active["max"] <= 2  # 并发数按服务商的并发上限（这里是 2）
     check = steps(env, turn["id"])[3]
     assert [j["status"] for j in check["result"]["jobs"]] == ["succeeded"] * 3
 
@@ -287,6 +287,35 @@ def test_failed_job_is_reported_by_check_jobs(env, monkeypatch):
     check = steps(env, last_turn(env)["id"])[1]
     [job] = check["result"]["jobs"]
     assert (job["status"], job["error"]) == ("failed", "额度不足")
+
+
+def test_check_jobs_can_return_as_soon_as_one_job_finishes(env, monkeypatch):
+    slow = threading.Event()
+
+    def run(args, ctx):
+        if args["prompt"] == "慢":
+            slow.wait(5)
+        out = Path(args["output_path"])
+        out.write_bytes(b"png")
+        return {"output_path": str(out), "name": out.stem}
+
+    fake_tool(monkeypatch, "generate_asset", run)
+    use_llm(monkeypatch, [
+        [call("generate_asset", "g1", prompt="快", output_path="output/stylized/a.png"),
+         call("generate_asset", "g2", prompt="慢", output_path="output/stylized/b.png")],
+        [call("check_jobs", "k1", wait_seconds=20, until="any")],
+        [text("先看第一张")],
+    ])
+    started = time.monotonic()
+    try:
+        send(env, "画两张", interaction="auto")
+        check = steps(env, last_turn(env)["id"])[2]
+        statuses = sorted(j["status"] for j in check["result"]["jobs"])
+        assert statuses == ["running", "succeeded"] and check["result"]["unfinished"] == 1
+        assert time.monotonic() - started < 4  # 没有等慢的那一张
+    finally:
+        slow.set()
+        env.jobs.wait(env.id, None, turn_id=None, timeout=5)  # 等慢的那张写完再关数据库
 
 
 def test_check_jobs_without_ids_reports_this_turn(env, monkeypatch):

@@ -1,8 +1,10 @@
-"""条漫成图的图片处理（只用 PIL）：找格子、叠坐标方格、画修图标记、把改好的区域贴回原图。
+"""条漫成图的图片处理（只用 PIL）：找格子、叠坐标方格、画修图标记、找出改了哪里、把改好的区域贴回原图。
 
 - 找格子：条漫是白色格缝、黑色格框。整行几乎全白的是行与行之间的缝，在每一行里再按整列全白的缝切开。
   格子里的白色条带两边有黑框，不会被当成格缝。顺序是从上到下、同一行从左到右，和阅读顺序一致。
 - 坐标方格：6 列（A–F）× 10 行（1–10）盖住整张图，检查和修图都用它说位置（例如 C4、C4:D6）。
+- 改了哪里：生图模型每次都把整张图重画一遍，线条会挪一两个像素。缩小后再比较、去掉细碎的点，
+  剩下的成片变化才是真的改动（换了颜色、挪了手）。贴回时顺着这些改动走，红框只框住一部分也不会留下半截旧图。
 """
 
 from __future__ import annotations
@@ -129,28 +131,124 @@ def _intersect(a: Rect, b: Rect) -> Rect | None:
     return r if r[0] < r[2] and r[1] < r[3] else None
 
 
-def composite(original: Image.Image, edited: Image.Image, boxes: Sequence[Rect], *, clips: Sequence[Rect | None] | None = None,
+def panels_in(panels: Sequence[Rect], rect: Rect, share: float = 0.2) -> list[Rect]:
+    """rect 落在哪几格：一个方格坐标可能跨过格缝，落在上下两格里。只蹭到一点边的格子不算。"""
+    area = max(1, (rect[2] - rect[0]) * (rect[3] - rect[1]))
+    out = []
+    for p in panels:
+        r = _intersect(p, rect)
+        if r and (r[2] - r[0]) * (r[3] - r[1]) >= share * area:
+            out.append(p)
+    return out
+
+
+def _matched(edited: Image.Image, size: tuple[int, int]) -> Image.Image:
+    edited = edited.convert("RGB")
+    return edited.resize(size, Image.Resampling.LANCZOS) if edited.size != size else edited
+
+
+class Changes:
+    """original 和 edited 之间成片的变化，在缩小的图上算（scale 是缩小的倍数）。"""
+
+    THRESHOLD = 40  # 缩小后某个颜色通道差这么多才算变了
+
+    def __init__(self, original: Image.Image, edited: Image.Image):
+        w, h = original.size
+        self.size = original.size
+        self.scale = max(1, w // 240)
+        small = (max(1, w // self.scale), max(1, h // self.scale))
+        a = original.convert("RGB").resize(small, Image.Resampling.BOX)
+        b = _matched(edited, original.size).resize(small, Image.Resampling.BOX)
+        diff = ImageChops.difference(a, b).split()
+        strongest = ImageChops.lighter(ImageChops.lighter(diff[0], diff[1]), diff[2])
+        # strong：缩小后差得多的点（量一处改了多少用）；mask：再去掉细碎的点，剩下成片的变化（贴回时顺着它走）
+        self.strong = strongest.point(lambda v: 255 if v >= self.THRESHOLD else 0)
+        self.mask = self.strong.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+
+    def _small(self, rect: Rect) -> Rect:
+        s = self.scale
+        return (rect[0] // s, rect[1] // s, max(rect[0] // s + 1, -(-rect[2] // s)), max(rect[1] // s + 1, -(-rect[3] // s)))
+
+    def _rects(self, rects: Sequence[Rect]) -> Image.Image:
+        out = Image.new("L", self.mask.size, 0)
+        draw = ImageDraw.Draw(out)
+        for r in rects:
+            x0, y0, x1, y1 = self._small(r)
+            draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+        return out
+
+    def fraction(self, rect: Rect) -> float:
+        """rect 里有多大比例变了。"""
+        crop = self.strong.crop(self._small(rect))
+        return crop.histogram()[255] / max(1, crop.width * crop.height)
+
+    def noise(self, rects: Sequence[Rect]) -> float:
+        """rects 附近以外变了的比例：模型重画整张图带来的底噪，用来判断一处是真的改了还是只是重画了一遍。"""
+        away = ImageChops.invert(self._rects(rects).filter(ImageFilter.MaxFilter(9)))
+        total = away.histogram()[255]
+        return ImageChops.multiply(self.strong, away).histogram()[255] / total if total else 0.0
+
+    GROWTH = 4.0  # 连着的那片改动最多是框的几倍大；再大多半是整张偏了色，不是这一处的改动
+
+    def grown(self, seed: Rect, within: Sequence[Rect]) -> Image.Image:
+        """和 seed 范围连在一起的那片变化（不超出 within 这几格），缩小图上的蒙版；大得不像这一处的改动时为空。"""
+        allowed = ImageChops.multiply(self.mask, self._rects(within))
+        region = ImageChops.multiply(allowed, self._rects([seed]))
+        x0, y0, x1, y1 = self._small(seed)
+        limit = self.GROWTH * (x1 - x0) * (y1 - y0)
+        for _ in range(max(self.mask.size)):
+            bigger = ImageChops.multiply(region.filter(ImageFilter.MaxFilter(5)), allowed)
+            if bigger.histogram()[255] > limit:
+                return Image.new("L", self.mask.size, 0)
+            if ImageChops.difference(bigger, region).getbbox() is None:
+                break
+            region = bigger
+        return region
+
+    def outside(self, rects: Sequence[Rect], panels: Sequence[Rect], min_fraction: float = 0.02) -> list[int]:
+        """rects（及其附近）以外、哪几格（从 1 数）有成片的变化：模型可能把改动画到了框外。"""
+        covered = self._rects(rects).filter(ImageFilter.MaxFilter(9))
+        rest = ImageChops.subtract(self.mask, covered)
+        out = []
+        for i, p in enumerate(panels, start=1):
+            crop = rest.crop(self._small(p))
+            if crop.histogram()[255] / max(1, crop.width * crop.height) >= min_fraction:
+                out.append(i)
+        return out
+
+
+def composite(original: Image.Image, edited: Image.Image, boxes: Sequence[Rect], *,
+              clips: Sequence[Rect | Sequence[Rect] | None] | None = None, changes: Changes | None = None,
               margin: float = 0.02, feather: float = 0.01) -> Image.Image:
     """只把 edited 里 boxes 范围（稍微放大、边缘羽化）的部分贴回 original，其他像素保持原样。
 
-    clips（每个 box 对应一个，可以是 None）是它所在那一格的内部：贴回的范围不超出这一格，格框和相邻的格保持原样。
+    clips（每个 box 对应一个：一格或几格的内部，可以是 None）：贴回的范围不超出这几格，格框和别的格保持原样。
+    changes：给了的话，和红框连在一起的那片变化也一起贴回（框只框住了半只手时，整只手都换成新的）。
+    贴到格框边上时不羽化：边上由格框挡着，羽化反而会让新旧两张图叠出重影。
     """
     base = original.convert("RGB")
-    patch = edited.convert("RGB").resize(base.size, Image.Resampling.LANCZOS) if edited.size != base.size else edited.convert("RGB")
+    patch = _matched(edited, base.size)
     w, h = base.size
     pad, blur = round(w * margin), max(1, round(w * feather))
     clips = list(clips or [None] * len(boxes))
-    mask = Image.new("L", base.size, 0)
-    limit = Image.new("L", base.size, 0)
-    draw, draw_limit = ImageDraw.Draw(mask), ImageDraw.Draw(limit)
+    soft = Image.new("L", base.size, 0)
     for (x0, y0, x1, y1), clip in zip(boxes, clips, strict=True):
-        region: Rect | None = (max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad))
-        if clip:
-            region = _intersect(region, clip)
-        if region:
-            draw.rectangle([region[0], region[1], region[2] - 1, region[3] - 1], fill=255)
-        draw_limit.rectangle(list(clip or (0, 0, w, h)), fill=255)
-    soft = ImageChops.multiply(mask.filter(ImageFilter.GaussianBlur(blur)), limit)
+        within: list[Rect] = [clip] if clip and isinstance(clip[0], int) else list(clip or [(0, 0, w, h)])  # type: ignore[arg-type]
+        region = (max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad))
+        # 先画不受格子限制的范围、羽化，最后再按格子硬切：格框边上保持全强度
+        mask = Image.new("L", base.size, 0)
+        ImageDraw.Draw(mask).rectangle([region[0], region[1], region[2] - 1, region[3] - 1], fill=255)
+        if changes is not None:
+            grown = changes.grown(region, within)
+            if grown.getbbox():
+                reach = 2 * (2 * blur // changes.scale) + 1  # 往外放一圈再羽化：羽化落在没变的地方
+                grown = grown.filter(ImageFilter.MaxFilter(max(3, reach))).resize(base.size, Image.Resampling.NEAREST)
+                mask = ImageChops.lighter(mask, grown)
+        limit = Image.new("L", base.size, 0)
+        draw_limit = ImageDraw.Draw(limit)
+        for c in within:
+            draw_limit.rectangle([c[0], c[1], c[2] - 1, c[3] - 1], fill=255)
+        soft = ImageChops.lighter(soft, ImageChops.multiply(mask.filter(ImageFilter.GaussianBlur(blur)), limit))
     return Image.composite(patch, base, soft)
 
 

@@ -12,6 +12,7 @@ from . import drafts  # noqa: F401  isort:skip
 from . import read_through  # noqa: F401  isort:skip
 from . import comic  # noqa: F401  isort:skip
 from . import fix  # noqa: F401  isort:skip
+from . import text_fix  # noqa: F401  isort:skip
 from . import storyboard  # noqa: F401  isort:skip
 from . import jobs  # noqa: F401  isort:skip
 from .base import Cancelled, Tool, ToolContext, collect_media, execute, file_url, for_mode, get, has_choices

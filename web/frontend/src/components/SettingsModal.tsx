@@ -84,6 +84,12 @@ function detectFromKey(raw: string): { format: ApiFormat; name: string; url: str
 }
 
 // 用 div 而不是 label 包裹：label 会把点击转给里面第一个按钮（例如误删模型标签）
+// 和后端 settings.py 的 DEFAULT_CONCURRENCY / MAX_CONCURRENCY 一致
+const DEFAULT_CONCURRENCY = 3;
+const MAX_CONCURRENCY = 16;
+const clampConcurrency = (value: number) =>
+  Number.isFinite(value) ? Math.min(MAX_CONCURRENCY, Math.max(1, Math.round(value))) : DEFAULT_CONCURRENCY;
+
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div role="group" aria-label={label} className="block min-w-0">
@@ -486,6 +492,7 @@ function ProviderForm({ provider, onSaved, onCancel }: {
   const [name, setName] = useState(provider?.name || "");
   const [format, setFormat] = useState<ApiFormat>(provider?.api_format || "openai_compatible");
   const [baseUrl, setBaseUrl] = useState(provider?.base_url || "");
+  const [concurrency, setConcurrency] = useState(provider?.max_concurrency ?? DEFAULT_CONCURRENCY);
   const [keysText, setKeysText] = useState("");
   const [showKeys, setShowKeys] = useState(false);
   const [models, setModels] = useState<string[]>(provider?.models || []);
@@ -573,6 +580,7 @@ function ProviderForm({ provider, onSaved, onCancel }: {
       base_url: baseUrl.trim(),
       api_keys: keys.length > 0 ? keys : provider ? null : [],
       models,
+      max_concurrency: clampConcurrency(concurrency),
     };
     try {
       onSaved(provider ? await updateProvider(provider.id, body) : await createProvider(body));
@@ -663,6 +671,18 @@ function ProviderForm({ provider, onSaved, onCancel }: {
             ))}
           </select>
         </div>
+      </Field>
+
+      <Field label={t("settings.concurrency")} hint={t("settings.concurrencyHint")}>
+        <input
+          type="number"
+          min={1}
+          max={MAX_CONCURRENCY}
+          value={concurrency}
+          onChange={(e) => setConcurrency(Number(e.target.value))}
+          onBlur={() => setConcurrency(clampConcurrency(concurrency))}
+          className={`${inputClass} w-24`}
+        />
       </Field>
 
       <Field label={`${t("settings.models")} (${models.length})`} hint={t("settings.modelsHint")}>
